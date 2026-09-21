@@ -102,3 +102,18 @@ node scripts/import-gmail-env.mjs \
 
 The migration deduplicates by Gmail address and imports them as
 `gmail:imap:app_password` with encrypted credentials and staged status.
+
+For Outlook accounts that need OAuth refresh tokens, use the reusable protocol
+runner:
+
+```bash
+node scripts/outlook-oauth-tokens.mjs \
+  --env-file /path/to/codex-team-oauth/.env \
+  --file /path/to/outlook.txt \
+  --recovery-email recovery@example.com \
+  --import \
+  --sync
+```
+
+See [Outlook OAuth token runbook](OUTLOOK_OAUTH_RUNBOOK.md) for the full
+operator workflow, recovery-code matching rules, and output files.
