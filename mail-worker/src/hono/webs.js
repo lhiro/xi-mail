@@ -23,4 +23,5 @@ import '../api/oauth-api'
 import '../api/account-transfer-api'
 import '../api/admin-api'
 import '../api/sub-worker-api'
+import '../api/mail-connection-api'
 export default app;

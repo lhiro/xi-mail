@@ -51,14 +51,14 @@
           <el-option key="4" :label="$t('selectDeleted')" value="delete"/>
           <el-option key="4" :label="$t('noRecipientTitle')" value="noone"/>
         </el-select>
+        <el-select v-model="params.sourceType" :placeholder="$t('mailSource')" class="status-select" @change="typeSelectChange">
+          <el-option key="all" :label="$t('all')" value="all"/>
+          <el-option key="gmail" :label="$t('mailSourceGmail')" value="gmail"/>
+          <el-option key="outlook" :label="$t('mailSourceOutlook')" value="outlook"/>
+          <el-option key="ximail" :label="$t('mailSourceXiMail')" value="ximail"/>
+        </el-select>
         <el-tooltip :content="$t('searchAction')" placement="top">
           <Icon class="icon" icon="mingcute:search-line" @click="search" width="18" height="18"/>
-        </el-tooltip>
-        <el-tooltip :content="$t('sortByTime')" placement="top">
-          <Icon class="icon" @click="changeTimeSort" icon="mingcute:sort-descending-line"
-                v-if="params.timeSort === 0" width="18" height="18"/>
-          <Icon class="icon" @click="changeTimeSort" icon="mingcute:sort-ascending-line" v-else
-                width="18" height="18"/>
         </el-tooltip>
         <el-tooltip :content="$t('batchDelete')" placement="top">
           <Icon class="icon clear" icon="mingcute:broom-line" width="18" height="18" @click="openBathDelete"/>
@@ -138,6 +138,7 @@ const openSelect = () => {
 const params = reactive({
   timeSort: 0,
   type: 'receive',
+  sourceType: 'all',
   userEmail: null,
   accountEmail: null,
   name: null,
@@ -182,7 +183,8 @@ const paramsStar = localStorage.getItem('all-email-params')
 if (paramsStar) {
   const locaParams = JSON.parse(paramsStar)
   params.type = locaParams.type
-  params.timeSort = locaParams.timeSort
+  params.timeSort = 0
+  params.sourceType = locaParams.sourceType || 'all'
   params.status = locaParams.status
   params.searchType = locaParams.searchType
 }
@@ -243,6 +245,7 @@ function refreshBefore() {
   searchValue.value = null
   params.timeSort = 0
   params.type = 'receive'
+  params.sourceType = 'all'
   params.userEmail = null
   params.accountEmail = null
   params.name = null
@@ -274,11 +277,6 @@ function search() {
   }
 
   sysEmailScroll.value.refreshList();
-}
-
-function changeTimeSort() {
-  params.timeSort = params.timeSort ? 0 : 1
-  search()
 }
 
 function typeSelectChange() {
@@ -328,7 +326,7 @@ async function latest() {
     try {
 
       const curTimeSort = params.timeSort
-      let list = await allEmailLatest(latestId)
+      let list = await allEmailLatest(latestId, params.sourceType)
 
       if (list.length === 0) {
         continue

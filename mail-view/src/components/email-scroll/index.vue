@@ -82,9 +82,18 @@
                   <div class="email-text">
                     <span class="email-subject" :style="(item.unread === EmailUnreadEnum.UNREAD && showUnread)  ? 'font-weight: bold' : ''">
                       <div class="unread" v-if="!isMobile && (item.unread === EmailUnreadEnum.UNREAD && showUnread) "/>
-                      <slot name="subject" :email="item" >
-                        {{ item.subject || '\u200B' }}
-                      </slot>
+                      <span
+                          v-if="props.type === 'all-email' && item.sourceType"
+                          class="mail-source-badge"
+                          :class="`mail-source-${item.sourceType}`"
+                      >
+                        {{ sourceTypeLabel(item.sourceType) }}
+                      </span>
+                      <span class="email-subject-text">
+                        <slot name="subject" :email="item" >
+                          {{ item.subject || '\u200B' }}
+                        </slot>
+                      </span>
                     </span>
                     <span class="email-content">{{ item.formatText || '\u200B' }}</span>
                   </div>
@@ -564,6 +573,41 @@ function htmlToText(email) {
 
 }
 
+function sourceTypeLabel(sourceType) {
+  const labels = {
+    gmail: t('mailSourceGmail'),
+    outlook: t('mailSourceOutlook'),
+    ximail: t('mailSourceXiMail'),
+  }
+  return labels[sourceType] || t('mailSourceXiMail')
+}
+
+function receivedTimeValue(value) {
+  const text = String(value || '').trim()
+  if (!text) {
+    return Number.NaN
+  }
+
+  // SQLite CURRENT_TIMESTAMP is stored without a timezone, while imported
+  // provider messages use ISO-8601 with Z. Treat both forms as UTC.
+  if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(text)) {
+    return Date.parse(`${text.replace(' ', 'T')}Z`)
+  }
+  return Date.parse(text)
+}
+
+function compareByReceivedTime(left, right) {
+  const leftTime = receivedTimeValue(left?.createTime)
+  const rightTime = receivedTimeValue(right?.createTime)
+  if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) {
+    return rightTime - leftTime
+  }
+  if (Number.isFinite(leftTime) !== Number.isFinite(rightTime)) {
+    return Number.isFinite(leftTime) ? -1 : 1
+  }
+  return Number(right?.emailId || 0) - Number(left?.emailId || 0)
+}
+
 function cleanSpace(text) {
   return text
       .replace(/[\u200B-\u200F\uFEFF\u034F\u200B-\u200F\u00A0\u3000\u00AD]/g, '')// 移除零宽空格
@@ -703,7 +747,25 @@ function addItem(email) {
   }
 
   email.formatText = htmlToText(email);
-  email.formatCreateTime = fromNow(email.formatCreateTime);
+  email.formatCreateTime = fromNow(email.createTime);
+
+  if (props.type === 'all-email') {
+    const index = emailList.findIndex(item => compareByReceivedTime(email, item) < 0)
+    if (index !== -1) {
+      handleList([email]);
+      emailList.splice(index, 0, email);
+    } else if (noLoading.value) {
+      handleList([email]);
+      emailList.push(email);
+    }
+
+    if (!latestEmail.value || compareByReceivedTime(email, latestEmail.value) < 0) {
+      latestEmail.value = email
+    }
+
+    total.value++
+    return true
+  }
 
   if (props.timeSort) {
     if (noLoading.value) {
@@ -1195,11 +1257,19 @@ function loadData() {
 
       .email-subject {
         overflow: hidden;
-        white-space: nowrap;
-        text-overflow: ellipsis;
+        display: flex;
+        align-items: center;
+        gap: 6px;
         @media (min-width: 1367px) {
           padding-left: 5px;
         }
+      }
+
+      .email-subject-text {
+        min-width: 0;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
       }
 
       .email-content {
@@ -1214,6 +1284,34 @@ function loadData() {
         }
       }
     }
+  }
+
+  .mail-source-badge {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 auto;
+    padding: 1px 6px;
+    border-radius: 999px;
+    font-size: 10px;
+    line-height: 16px;
+    font-weight: 600;
+    letter-spacing: .01em;
+    vertical-align: middle;
+  }
+
+  .mail-source-gmail {
+    color: #b3261e;
+    background: #fce8e6;
+  }
+
+  .mail-source-outlook {
+    color: #075985;
+    background: #e0f2fe;
+  }
+
+  .mail-source-ximail {
+    color: #166534;
+    background: #dcfce7;
   }
 
 

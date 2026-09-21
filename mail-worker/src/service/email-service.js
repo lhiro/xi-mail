@@ -21,6 +21,44 @@ import domainUtils from '../utils/domain-uitls';
 import account from "../entity/account";
 import { att } from '../entity/att';
 import telegramService from './telegram-service';
+import mailConnection from '../entity/mail-connection';
+import mailMessageRef from '../entity/mail-message-ref';
+
+const emailTimeKey = sql`CAST(strftime('%s', ${email.createTime}) AS INTEGER)`;
+const mailSourceType = sql`CASE
+	WHEN ${mailConnection.provider} = 'gmail' THEN 'gmail'
+	WHEN ${mailConnection.provider} = 'outlook' THEN 'outlook'
+	ELSE 'ximail'
+END`;
+
+async function getEmailCursor(c, emailId) {
+	if (!Number.isInteger(emailId) || emailId <= 0 || emailId >= 9999999999) {
+		return null;
+	}
+
+	return orm(c)
+		.select({ createTime: email.createTime })
+		.from(email)
+		.where(eq(email.emailId, emailId))
+		.get();
+}
+
+function emailPageCursor(emailId, cursor, timeSort) {
+	if (!cursor) {
+		return timeSort ? gt(email.emailId, emailId) : lt(email.emailId, emailId);
+	}
+
+	const cursorTimeKey = sql`CAST(strftime('%s', ${cursor.createTime}) AS INTEGER)`;
+	return timeSort
+		? or(
+			gt(emailTimeKey, cursorTimeKey),
+			and(eq(emailTimeKey, cursorTimeKey), gt(email.emailId, emailId)),
+		)
+		: or(
+			lt(emailTimeKey, cursorTimeKey),
+			and(eq(emailTimeKey, cursorTimeKey), lt(email.emailId, emailId)),
+		);
+}
 
 const emailService = {
 
@@ -53,6 +91,7 @@ const emailService = {
 			allReceive = accountRow.allReceive;
 		}
 
+		const cursor = await getEmailCursor(c, emailId);
 		const query = orm(c)
 			.select({
 				...email,
@@ -73,7 +112,7 @@ const emailService = {
 				and(
 					allReceive ? eq(1,1) : eq(email.accountId, accountId),
 					eq(email.userId, userId),
-					timeSort ? gt(email.emailId, emailId) : lt(email.emailId, emailId),
+					emailPageCursor(emailId, cursor, timeSort),
 					eq(email.type, type),
 					eq(email.isDel, isDel.NORMAL),
 					eq(account.isDel, isDel.NORMAL)
@@ -81,9 +120,9 @@ const emailService = {
 			);
 
 		if (timeSort) {
-			query.orderBy(asc(email.emailId));
+			query.orderBy(asc(emailTimeKey), asc(email.emailId));
 		} else {
-			query.orderBy(desc(email.emailId));
+			query.orderBy(desc(emailTimeKey), desc(email.emailId));
 		}
 
 		const listQuery = query.limit(size).all();
@@ -110,7 +149,7 @@ const emailService = {
 				eq(email.type, type),
 				eq(email.isDel, isDel.NORMAL)
 			))
-			.orderBy(desc(email.emailId)).limit(1).get();
+			.orderBy(desc(emailTimeKey), desc(email.emailId)).limit(1).get();
 
 		let [list, totalRow, latestEmail] = await Promise.all([listQuery, totalQuery, latestEmailQuery]);
 
@@ -529,6 +568,7 @@ const emailService = {
 
 	async latest(c, params, userId) {
 		let { emailId, accountId, allReceive } = params;
+		emailId = Number(emailId) || 0;
 		allReceive = Number(allReceive);
 
 		if (isNaN(allReceive)) {
@@ -536,6 +576,7 @@ const emailService = {
 			allReceive = accountRow.allReceive;
 		}
 
+		const cursor = await getEmailCursor(c, emailId);
 		let list = await orm(c).select({...email}).from(email)
 			.leftJoin(
 				account,
@@ -543,14 +584,14 @@ const emailService = {
 			)
 			.where(
 				and(
-					gt(email.emailId, emailId),
+					emailPageCursor(emailId, cursor, 1),
 					eq(email.userId, userId),
 					eq(email.isDel, isDel.NORMAL),
 					eq(account.isDel, isDel.NORMAL),
 					allReceive ? eq(1,1) : eq(email.accountId, accountId),
 					eq(email.type, emailConst.type.RECEIVE)
 				))
-			.orderBy(desc(email.emailId))
+			.orderBy(desc(emailTimeKey), desc(email.emailId))
 			.limit(20);
 
 		await this.emailAddAtt(c, list);
@@ -598,25 +639,27 @@ const emailService = {
 
 	async allList(c, params) {
 
-		let { emailId, size, name, subject, accountEmail, userEmail, type, timeSort } = params;
+		let {
+			emailId,
+			size,
+			name,
+			subject,
+			accountEmail,
+			userEmail,
+			type,
+			sourceType,
+		} = params;
 
 		size = Number(size);
 
 		emailId = Number(emailId);
-		timeSort = Number(timeSort);
 
 		if (size > 50) {
 			size = 50;
 		}
 
 		if (!emailId) {
-
-			if (timeSort) {
-				emailId = 0;
-			} else {
-				emailId = 9999999999;
-			}
-
+			emailId = 9999999999;
 		}
 
 		const conditions = [];
@@ -635,6 +678,10 @@ const emailService = {
 
 		if (type === 'noone') {
 			conditions.push(eq(email.status, emailConst.status.NOONE));
+		}
+
+		if (sourceType && sourceType !== 'all') {
+			conditions.push(sql`${mailSourceType} = ${sourceType}`);
 		}
 
 		if (userEmail) {
@@ -661,37 +708,42 @@ const emailService = {
 		conditions.push(ne(email.status, emailConst.status.SAVING));
 
 		const countConditions = [...conditions];
+		const cursor = await getEmailCursor(c, emailId);
+		conditions.unshift(emailPageCursor(emailId, cursor, 0));
 
-		if (timeSort) {
-			conditions.unshift(gt(email.emailId, emailId));
-		} else {
-			conditions.unshift(lt(email.emailId, emailId));
-		}
-
-		const query = orm(c).select({ ...email, userEmail: user.email })
+		const query = orm(c).select({
+			...email,
+			userEmail: user.email,
+			sourceType: mailSourceType,
+		})
 			.from(email)
 			.leftJoin(user, eq(email.userId, user.userId))
+			.leftJoin(mailMessageRef, eq(mailMessageRef.emailId, email.emailId))
+			.leftJoin(mailConnection, eq(mailConnection.connectionId, mailMessageRef.connectionId))
 			.where(and(...conditions));
 
 		const queryCount = orm(c).select({ total: count() })
 			.from(email)
 			.leftJoin(user, eq(email.userId, user.userId))
+			.leftJoin(mailMessageRef, eq(mailMessageRef.emailId, email.emailId))
+			.leftJoin(mailConnection, eq(mailConnection.connectionId, mailMessageRef.connectionId))
 			.where(and(...countConditions));
 
-		if (timeSort) {
-			query.orderBy(asc(email.emailId));
-		} else {
-			query.orderBy(desc(email.emailId));
-		}
+		query.orderBy(desc(emailTimeKey), desc(email.emailId));
 
 		const listQuery = await query.limit(size).all();
 		const totalQuery = await queryCount.get();
-		const latestEmailQuery = await orm(c).select().from(email)
-			.where(and(
-				eq(email.type, emailConst.type.RECEIVE),
-				ne(email.status, emailConst.status.SAVING)
-			))
-			.orderBy(desc(email.emailId)).limit(1).get();
+		const latestEmailQuery = await orm(c).select({
+			...email,
+			sourceType: mailSourceType,
+		})
+			.from(email)
+			.leftJoin(mailMessageRef, eq(mailMessageRef.emailId, email.emailId))
+			.leftJoin(mailConnection, eq(mailConnection.connectionId, mailMessageRef.connectionId))
+			.where(and(...countConditions))
+			.orderBy(desc(emailTimeKey), desc(email.emailId))
+			.limit(1)
+			.get();
 
 		let [list, totalRow, latestEmail] = await Promise.all([listQuery, totalQuery, latestEmailQuery]);
 
@@ -710,17 +762,30 @@ const emailService = {
 
 	async allEmailLatest(c, params) {
 
-		const { emailId } = params;
+		const { emailId, sourceType } = params;
+		const cursorEmailId = Number(emailId) || 0;
+		const cursor = await getEmailCursor(c, cursorEmailId);
+		const conditions = [
+			emailPageCursor(cursorEmailId, cursor, 1),
+			eq(email.type, emailConst.type.RECEIVE),
+			ne(email.status, emailConst.status.SAVING),
+		];
 
-		let list = await orm(c).select({...email, userEmail: user.email}).from(email)
+		if (sourceType && sourceType !== 'all') {
+			conditions.push(sql`${mailSourceType} = ${sourceType}`);
+		}
+
+		let list = await orm(c).select({
+			...email,
+			userEmail: user.email,
+			sourceType: mailSourceType,
+		}).from(email)
 			.leftJoin(user, eq(email.userId, user.userId))
+			.leftJoin(mailMessageRef, eq(mailMessageRef.emailId, email.emailId))
+			.leftJoin(mailConnection, eq(mailConnection.connectionId, mailMessageRef.connectionId))
 			.where(
-				and(
-					gt(email.emailId, emailId),
-					eq(email.type, emailConst.type.RECEIVE),
-					ne(email.status, emailConst.status.SAVING)
-				))
-			.orderBy(desc(email.emailId))
+				and(...conditions))
+			.orderBy(desc(emailTimeKey), desc(email.emailId))
 			.limit(20);
 
 		await this.emailAddAtt(c, list);

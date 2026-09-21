@@ -40,6 +40,7 @@ const dbInit = {
 		await this.v3_9DB(c);
 		await this.v4_0DB(c);
 		await this.v4_1DB(c);
+		await this.v4_2DB(c);
 		await settingService.refresh(c);
 		return c.text('success');
 	},
@@ -204,6 +205,88 @@ const dbInit = {
 		} catch (e) {
 			console.warn(`跳过字段：${e.message}`);
 		}
+	},
+
+	async v4_2DB(c) {
+		const createTableSqlList = [
+			`CREATE TABLE IF NOT EXISTS mail_connection (
+				connection_id INTEGER PRIMARY KEY AUTOINCREMENT,
+				account_id INTEGER NOT NULL,
+				provider TEXT NOT NULL,
+				protocol TEXT NOT NULL,
+				auth_type TEXT NOT NULL,
+				label TEXT NOT NULL DEFAULT '',
+				status TEXT NOT NULL DEFAULT 'pending',
+				settings TEXT NOT NULL DEFAULT '{}',
+				last_sync_at DATETIME,
+				last_sync_status TEXT NOT NULL DEFAULT '',
+				last_sync_error TEXT NOT NULL DEFAULT '',
+				create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+				update_time DATETIME DEFAULT CURRENT_TIMESTAMP
+			)`,
+			`CREATE TABLE IF NOT EXISTS mail_credential (
+				credential_id INTEGER PRIMARY KEY AUTOINCREMENT,
+				connection_id INTEGER NOT NULL,
+				credential_type TEXT NOT NULL,
+				client_id TEXT NOT NULL DEFAULT '',
+				client_secret_ciphertext TEXT NOT NULL DEFAULT '',
+				client_secret_iv TEXT NOT NULL DEFAULT '',
+				token_endpoint TEXT NOT NULL DEFAULT '',
+				secret_ciphertext TEXT NOT NULL DEFAULT '',
+				secret_iv TEXT NOT NULL DEFAULT '',
+				access_token_ciphertext TEXT NOT NULL DEFAULT '',
+				access_token_iv TEXT NOT NULL DEFAULT '',
+				access_token_expires_at DATETIME,
+				scopes TEXT NOT NULL DEFAULT '[]',
+				metadata TEXT NOT NULL DEFAULT '{}',
+				create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+				update_time DATETIME DEFAULT CURRENT_TIMESTAMP
+			)`,
+			`CREATE TABLE IF NOT EXISTS mail_message_ref (
+				message_ref_id INTEGER PRIMARY KEY AUTOINCREMENT,
+				email_id INTEGER NOT NULL,
+				connection_id INTEGER NOT NULL,
+				remote_id TEXT NOT NULL,
+				folder TEXT NOT NULL DEFAULT 'inbox',
+				remote_tag TEXT NOT NULL DEFAULT '',
+				remote_received_at DATETIME,
+				create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+				update_time DATETIME DEFAULT CURRENT_TIMESTAMP
+			)`,
+			`CREATE TABLE IF NOT EXISTS mail_sync_task (
+				task_id INTEGER PRIMARY KEY AUTOINCREMENT,
+				connection_id INTEGER NOT NULL,
+				task_type TEXT NOT NULL,
+				status TEXT NOT NULL DEFAULT 'pending',
+				idempotency_key TEXT NOT NULL,
+				payload TEXT NOT NULL DEFAULT '{}',
+				attempt_count INTEGER NOT NULL DEFAULT 0,
+				locked_until DATETIME,
+				last_error TEXT NOT NULL DEFAULT '',
+				create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+				update_time DATETIME DEFAULT CURRENT_TIMESTAMP
+			)`,
+			`CREATE UNIQUE INDEX IF NOT EXISTS idx_mail_connection_account ON mail_connection(account_id)`,
+			`CREATE INDEX IF NOT EXISTS idx_mail_connection_status ON mail_connection(status)`,
+			`CREATE UNIQUE INDEX IF NOT EXISTS idx_mail_credential_connection_type ON mail_credential(connection_id, credential_type)`,
+			`CREATE INDEX IF NOT EXISTS idx_mail_credential_connection ON mail_credential(connection_id)`,
+			`CREATE UNIQUE INDEX IF NOT EXISTS idx_mail_message_ref_email ON mail_message_ref(email_id)`,
+			`CREATE UNIQUE INDEX IF NOT EXISTS idx_mail_message_ref_remote ON mail_message_ref(connection_id, remote_id, folder)`,
+			`CREATE INDEX IF NOT EXISTS idx_mail_message_ref_connection ON mail_message_ref(connection_id)`,
+			`CREATE UNIQUE INDEX IF NOT EXISTS idx_mail_sync_task_idempotency ON mail_sync_task(idempotency_key)`,
+			`CREATE INDEX IF NOT EXISTS idx_mail_sync_task_status ON mail_sync_task(status, locked_until)`,
+			`CREATE INDEX IF NOT EXISTS idx_mail_sync_task_connection ON mail_sync_task(connection_id)`,
+			`ALTER TABLE mail_credential ADD COLUMN client_secret_ciphertext TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE mail_credential ADD COLUMN client_secret_iv TEXT NOT NULL DEFAULT ''`,
+		];
+
+		await Promise.all(createTableSqlList.map(async (sql) => {
+			try {
+				await c.env.db.prepare(sql).run();
+			} catch (e) {
+				console.warn(`跳过邮箱连接表结构：${e.message}`);
+			}
+		}));
 	},
 
 	async v2_8DB(c) {

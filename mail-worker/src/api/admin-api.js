@@ -1,27 +1,11 @@
 import app from '../hono/hono';
 import result from '../model/result';
-import KvConst from '../const/kv-const';
 import orm from '../entity/orm';
 import email from '../entity/email';
 import BizError from '../error/biz-error';
 import { and, eq, desc, count } from 'drizzle-orm';
 import { isDel } from '../const/entity-const';
-
-/** Verify x-admin-auth header against stored global token */
-async function verifyAdminToken(c) {
-	const enabled = await c.env.kv.get(KvConst.GLOBAL_TOKEN_ENABLED);
-	if (enabled !== '1') {
-		throw new BizError('Global Token 未启用', 403);
-	}
-	const storedToken = await c.env.kv.get(KvConst.GLOBAL_TOKEN);
-	if (!storedToken) {
-		throw new BizError('Global Token 未配置', 403);
-	}
-	const headerToken = c.req.header('x-admin-auth');
-	if (!headerToken || headerToken !== storedToken) {
-		throw new BizError('Token 验证失败', 401);
-	}
-}
+import verifyAdminToken from '../security/admin-token';
 
 /**
  * GET /admin/mails

@@ -31,11 +31,25 @@ run_worker_first = true
 [triggers]
 crons = ["0 16 * * *"]
 
+# Create once with: npx wrangler queues create xi-mail-sync
+[[queues.producers]]
+queue = "xi-mail-sync"
+binding = "MAIL_SYNC_QUEUE"
+
+[[queues.consumers]]
+queue = "xi-mail-sync"
+max_batch_size = 1
+max_batch_timeout = 10
+max_retries = 3
+
 [vars]
 orm_log = false
 domain = ["example.com", "mail.example.com"]
 admin = "admin@example.com"
 jwt_secret = "<YOUR_JWT_SECRET_MIN_32_CHARS>"
+
+# Set as a Worker secret, never as a plain variable:
+# npx wrangler secret put mail_credential_encryption_key
 
 # Uncomment to enable OAuth (LinuxDo)
 # linuxdo_switch = "false"

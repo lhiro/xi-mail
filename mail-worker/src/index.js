@@ -5,6 +5,7 @@ import verifyRecordService from './service/verify-record-service';
 import emailService from './service/email-service';
 import kvObjService from './service/kv-obj-service';
 import oauthService from "./service/oauth-service";
+import mailSyncService from './service/mail-sync-service';
 export default {
 	 async fetch(req, env, ctx) {
 
@@ -26,11 +27,35 @@ export default {
 		});
 	},
 	email: email,
-	async scheduled(c, env, ctx) {
-		await verifyRecordService.clearRecord({ env })
-		await userService.resetDaySendCount({ env })
-		await emailService.completeReceiveAll({ env })
-		await oauthService.clearNoBindOathUser({ env })
-		await userService.autoBanInactiveUsers({ env })
+	async scheduled(controller, env, ctx) {
+		const runtime = { env };
+		await verifyRecordService.clearRecord(runtime);
+		await userService.resetDaySendCount(runtime);
+		await emailService.completeReceiveAll(runtime);
+		await oauthService.clearNoBindOathUser(runtime);
+		await userService.autoBanInactiveUsers(runtime);
+		await mailSyncService.enqueueReadyConnections(runtime);
+	},
+	async queue(batch, env, ctx) {
+		const runtime = { env };
+		for (const message of batch.messages) {
+			try {
+				const payload = typeof message.body === 'string'
+					? JSON.parse(message.body)
+					: message.body;
+				const syncResult = await mailSyncService.syncConnection(
+					runtime,
+					payload.connectionId,
+					payload,
+				);
+				if (syncResult?.skipped && syncResult.reason === 'in_flight') {
+					message.retry();
+					continue;
+				}
+				message.ack();
+			} catch (error) {
+				message.retry();
+			}
+		}
 	},
 };
