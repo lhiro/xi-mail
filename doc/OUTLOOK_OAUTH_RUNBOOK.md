@@ -97,9 +97,12 @@ The Xi-Mail code provider intentionally filters by:
 If Microsoft rejects a submitted code, the runner records
 `verify_code_failed` and moves on instead of repeatedly submitting stale codes.
 If Microsoft returns the AddProof page again after the recovery email is
-submitted, the runner records `add_proof_not_accepted`; this usually means the
-account did not reach the security-code page and should be investigated before
-continuing a large batch.
+submitted, the runner now falls forward into the newer
+`/interrupt/credentialaction` ACMA flow and posts the email enrollment API
+directly. If that API cannot send the one-time token, the runner records
+`credential_email_send_failed`; this is a provider-side send failure and should
+be investigated before continuing a large batch. If no credentialaction handoff
+is available, the legacy fallback status remains `add_proof_not_accepted`.
 
 ## Outputs
 

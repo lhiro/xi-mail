@@ -81,9 +81,9 @@ function isRedirectStatus(status) {
 
 function redact(value = '') {
 	return String(value)
+		.replace(/("(?:apiCanary|canary|continuationToken|sAuthenticationToken|telemetryContext)"\s*:\s*")[^"]+/gi, '$1***')
 		.replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, item => maskEmail(item))
-		.replace(/(code=)[^&\s]+/gi, '$1***')
-		.replace(/(iOttText=)[^&\s]+/gi, '$1***')
+		.replace(/([?&](?:code|iOttText)=)[^&\s]+/gi, '$1***')
 		.slice(0, 1600);
 }
 
@@ -138,6 +138,119 @@ function extractConfig(html = '') {
 	} catch {
 		return null;
 	}
+}
+
+function extractJsonObjectAfter(html = '', marker = '') {
+	const source = String(html || '');
+	const index = source.indexOf(marker);
+	if (index < 0) {
+		return null;
+	}
+	const start = source.indexOf('{', index);
+	if (start < 0) {
+		return null;
+	}
+
+	let depth = 0;
+	let inString = false;
+	let escaped = false;
+	let quote = '';
+	let end = -1;
+	for (let pointer = start; pointer < source.length; pointer += 1) {
+		const char = source[pointer];
+		if (inString) {
+			if (escaped) {
+				escaped = false;
+			} else if (char === '\\') {
+				escaped = true;
+			} else if (char === quote) {
+				inString = false;
+			}
+			continue;
+		}
+		if (char === '"' || char === "'") {
+			inString = true;
+			quote = char;
+			continue;
+		}
+		if (char === '{') {
+			depth += 1;
+		} else if (char === '}') {
+			depth -= 1;
+			if (depth === 0) {
+				end = pointer + 1;
+				break;
+			}
+		}
+	}
+	if (end < 0) {
+		return null;
+	}
+
+	try {
+		return JSON.parse(source.slice(start, end));
+	} catch {
+		return null;
+	}
+}
+
+function extractServerData(html = '') {
+	return extractJsonObjectAfter(html, 'var ServerData=')
+		|| extractJsonObjectAfter(html, 'ServerData=')
+		|| null;
+}
+
+function credentialActionUrlFromAddProof(addUrl, inputs = {}) {
+	const source = new URL(addUrl);
+	const target = new URL('/interrupt/credentialaction', `${source.protocol}//${source.host}`);
+	target.searchParams.set('mkt', source.searchParams.get('mkt') || 'en-US');
+	target.searchParams.set('uiflavor', source.searchParams.get('uiflavor') || 'web');
+	target.searchParams.set('client_id', source.searchParams.get('client_id') || '');
+	target.searchParams.set('id', source.searchParams.get('id') || '38936');
+	target.searchParams.set('ru', source.searchParams.get('ru') || inputs.ru || '');
+	return target.toString();
+}
+
+function credentialActionHandoffFromAddProof(action, inputs = {}, referer = '') {
+	const actionUrl = absoluteUrl(action, referer || 'https://account.live.com/');
+	const parsed = new URL(actionUrl);
+	return {
+		url: credentialActionUrlFromAddProof(actionUrl, inputs),
+		referer,
+		formData: {
+			scenarios: JSON.stringify({ mode: 'mpb', forSMSDeprecation: 'false' }),
+			mpcxt: parsed.searchParams.get('mpcxt') || 'CATB',
+			pprid: inputs.pprid || '',
+			ipt: inputs.ipt || '',
+			uaid: inputs.uaid || '',
+			posturl: parsed.searchParams.get('posturl') || '',
+		},
+	};
+}
+
+function linkHref(links = {}, name = '') {
+	const link = links?.[name];
+	if (!link) {
+		return '';
+	}
+	return typeof link === 'string' ? link : link.href || '';
+}
+
+function absoluteAccountUrl(pathOrUrl = '') {
+	return new URL(pathOrUrl, 'https://account.live.com').toString();
+}
+
+function summarizeCredentialError(json = {}) {
+	const error = json?.error || json?.innerError || json;
+	const code = error?.code || json?.code || '';
+	const innerCode = error?.innerError?.code || error?.innererror?.code || '';
+	const message = error?.message || json?.message || '';
+	const parts = [
+		code ? `errorCode=${code}` : '',
+		innerCode ? `inner=${innerCode}` : '',
+		message ? `message=${message}` : '',
+	].filter(Boolean);
+	return redact(parts.join(' ') || JSON.stringify(json || {}).slice(0, 300));
 }
 
 function classifyPage({ text = '', url = '', redirectUri }) {
@@ -258,7 +371,7 @@ export class OutlookProtocolOAuthClient {
 			method: 'POST',
 			headers: {
 				'content-type': 'application/x-www-form-urlencoded',
-				...(referer ? { origin: new URL(url).origin, referer } : {}),
+				...(referer ? { origin: new URL(referer).origin, referer } : {}),
 				...headers,
 			},
 			body: new URLSearchParams(data).toString(),
@@ -295,6 +408,46 @@ export class OutlookProtocolOAuthClient {
 			json = {};
 		}
 		return { res: response, text, json, url: response.url || url };
+	}
+
+	async postCredentialJson(state, url, data, serverData = {}, referer = '', httpMethod = 'POST') {
+		const response = await state.fetch(url, {
+			method: httpMethod,
+			headers: {
+				'user-agent': this.config.userAgent,
+				'content-type': 'application/json; charset=utf-8',
+				accept: 'application/json, text/plain, */*',
+				canary: serverData?.apiCanary || serverData?.acmaInitialConfig?.canary || '',
+				'client-request-id': serverData?.acmaInitialConfig?.request?.correlationId
+					|| serverData?.sUnauthSessionID
+					|| '',
+				hpgid: String(serverData?.hpgid || 0),
+				...(referer ? { origin: new URL(referer).origin, referer } : {}),
+			},
+			body: JSON.stringify(data),
+		});
+		const text = await response.text();
+		let json = {};
+		try {
+			json = JSON.parse(text);
+		} catch {
+			json = {};
+		}
+		return { res: response, text, json, url: response.url || url };
+	}
+
+	async postCredentialLink(state, href, requestData = {}, serverData = {}, referer = '', continuationToken = undefined) {
+		const token = continuationToken
+			?? serverData?.acmaInitialResponse?.continuationToken
+			?? serverData?.continuationToken
+			?? '';
+		return this.postCredentialJson(
+			state,
+			absoluteAccountUrl(href),
+			{ ...requestData, continuationToken: token },
+			serverData,
+			referer,
+		);
 	}
 
 	async followRedirects(state, step) {
@@ -345,10 +498,194 @@ export class OutlookProtocolOAuthClient {
 		return this.followRedirects(state, step);
 	}
 
+	async handleCredentialActionRecovery(state, handoffOrStep) {
+		let step = handoffOrStep?.res
+			? handoffOrStep
+			: null;
+		let referer = step?.url || handoffOrStep?.referer || '';
+		const startedAt = Date.now();
+
+		if (!step && handoffOrStep?.url) {
+			step = await this.postForm(state, handoffOrStep.url, handoffOrStep.formData || {}, {}, handoffOrStep.referer || '');
+			step = await this.followRedirects(state, step);
+			referer = step.url;
+		}
+		if (!step) {
+			return { status: 'credential_action_handoff_missing' };
+		}
+
+		const serverData = extractServerData(step.text || '');
+		await this.traceStep(state, {
+			phase: 'credential_action_enter',
+			url: step.url,
+			title: titleOf(step.text),
+			hasServerData: Boolean(serverData),
+			text: step.text,
+		});
+		if (!serverData) {
+			return {
+				status: 'credential_action_parse_failed',
+				url: redact(step.url),
+				detail: redact(titleOf(step.text) || stripText(step.text).slice(0, 300)),
+			};
+		}
+
+		const methods = serverData?.acmaInitialResponse?._embedded?.methods || [];
+		const emailMethod = methods.find(method => method.type === 'email' && linkHref(method._links, 'enroll'))
+			|| methods.find(method => linkHref(method._links, 'enroll'));
+		const enrollHref = linkHref(emailMethod?._links, 'enroll')
+			|| linkHref(serverData?.acmaInitialResponse?._links, 'enroll');
+		if (!enrollHref) {
+			return {
+				status: 'credential_enroll_link_missing',
+				url: redact(step.url),
+				detail: redact(JSON.stringify({
+					state: serverData?.acmaInitialResponse?.state || '',
+					action: serverData?.acmaInitialResponse?.action || '',
+				})),
+			};
+		}
+
+		let currentData = serverData;
+		let currentLinks = emailMethod?._links || serverData?.acmaInitialResponse?._links || {};
+		let currentContinuation = serverData?.acmaInitialResponse?.continuationToken || serverData?.continuationToken || '';
+		const enroll = await this.postCredentialLink(
+			state,
+			enrollHref,
+			{ email: state.recoveryEmail },
+			serverData,
+			referer,
+			currentContinuation,
+		);
+		await this.traceStep(state, {
+			phase: 'credential_email_enroll',
+			url: enroll.url,
+			status: enroll.res.status,
+			keys: Object.keys(enroll.json || {}),
+			text: enroll.text,
+		});
+		if (!enroll.res.ok || enroll.json?.error) {
+			return {
+				status: 'credential_email_send_failed',
+				url: redact(enroll.url),
+				detail: summarizeCredentialError(enroll.json),
+			};
+		}
+
+		currentData = { ...serverData, ...enroll.json };
+		currentLinks = enroll.json?._links || currentLinks;
+		currentContinuation = enroll.json?.continuationToken || currentContinuation;
+
+		const challengeHref = linkHref(currentLinks, 'challenge');
+		if (challengeHref) {
+			const challenge = await this.postCredentialLink(
+				state,
+				challengeHref,
+				emailMethod?.proofConfirmation ? { proofConfirmation: emailMethod.proofConfirmation } : {},
+				currentData,
+				referer,
+				currentContinuation,
+			);
+			await this.traceStep(state, {
+				phase: 'credential_challenge',
+				url: challenge.url,
+				status: challenge.res.status,
+				keys: Object.keys(challenge.json || {}),
+				text: challenge.text,
+			});
+			if (!challenge.res.ok || challenge.json?.error) {
+				return {
+					status: 'credential_challenge_failed',
+					url: redact(challenge.url),
+					detail: summarizeCredentialError(challenge.json),
+				};
+			}
+			currentData = { ...currentData, ...challenge.json };
+			currentLinks = challenge.json?._links || currentLinks;
+			currentContinuation = challenge.json?.continuationToken || currentContinuation;
+		}
+
+		const verifyHref = linkHref(currentLinks, 'verify');
+		if (!verifyHref) {
+			return {
+				status: 'credential_email_sent_unhandled',
+				url: redact(enroll.url),
+				detail: redact(JSON.stringify({
+					keys: Object.keys(enroll.json || {}),
+					linkKeys: Object.keys(currentLinks || {}),
+					state: enroll.json?.state || '',
+					action: enroll.json?.action || '',
+				})),
+			};
+		}
+
+		const code = await state.codeProvider({
+			accountEmail: state.account.email,
+			recoveryEmail: state.recoveryEmail,
+			afterMs: startedAt,
+			purpose: 'credential_action',
+		});
+		const verifyBodies = [
+			{ verificationCode: code },
+			{ code },
+			{ otc: code },
+		];
+		let verify = null;
+		for (const body of verifyBodies) {
+			verify = await this.postCredentialLink(state, verifyHref, body, currentData, referer, currentContinuation);
+			await this.traceStep(state, {
+				phase: 'credential_verify',
+				url: verify.url,
+				status: verify.res.status,
+				keys: Object.keys(verify.json || {}),
+				requestKeys: Object.keys(body),
+				text: verify.text,
+			});
+			if (verify.res.ok && !verify.json?.error) {
+				break;
+			}
+			const codeName = verify.json?.error?.code || verify.json?.code || '';
+			if (!/invalidrequest|missing|required/i.test(codeName)) {
+				break;
+			}
+		}
+		if (!verify?.res.ok || verify?.json?.error) {
+			return {
+				status: 'credential_verify_failed',
+				url: redact(verify?.url || verifyHref),
+				detail: summarizeCredentialError(verify?.json || {}),
+			};
+		}
+
+		const redirectUrl = verify.json?.redirectUrl
+			|| verify.json?.url
+			|| linkHref(verify.json?._links, 'redirect')
+			|| linkHref(verify.json?._links, 'continue')
+			|| linkHref(verify.json?._links, 'next');
+		if (!redirectUrl) {
+			return {
+				status: 'credential_verify_unhandled',
+				url: redact(verify.url),
+				detail: redact(JSON.stringify({
+					keys: Object.keys(verify.json || {}),
+					linkKeys: Object.keys(verify.json?._links || {}),
+					state: verify.json?.state || '',
+					action: verify.json?.action || '',
+				})),
+			};
+		}
+
+		step = await this.fetchText(state, absoluteAccountUrl(redirectUrl));
+		step = await this.followRedirects(state, step);
+		return this.finishOauth(state, step);
+	}
+
 	async handleAddProof(state, step) {
 		await this.traceStep(state, { phase: 'add_enter', url: step.url, title: titleOf(step.text), text: step.text });
 		let form = firstForm(step.text);
+		let credentialHandoff = null;
 		if (form?.action && /proofs\/Add/i.test(form.action) && !('EmailAddress' in form.inputs)) {
+			credentialHandoff = credentialActionHandoffFromAddProof(form.action, form.inputs, step.url);
 			step = await this.postForm(state, absoluteUrl(form.action, step.url), form.inputs, {}, step.url);
 			step = await this.followRedirects(state, step);
 			await this.traceStep(state, { phase: 'add_rendered', url: step.url, title: titleOf(step.text), text: step.text });
@@ -371,6 +708,9 @@ export class OutlookProtocolOAuthClient {
 		await this.traceStep(state, { phase: 'add_submitted', url: step.url, title: titleOf(step.text), text: step.text });
 		const postForm = firstForm(step.text);
 		if (postForm?.inputs && 'EmailAddress' in postForm.inputs) {
+			if (credentialHandoff) {
+				return this.handleCredentialActionRecovery(state, credentialHandoff);
+			}
 			return {
 				status: 'add_proof_not_accepted',
 				url: redact(step.url),
@@ -453,7 +793,7 @@ export class OutlookProtocolOAuthClient {
 		}, pageConfig);
 		await this.traceStep(state, { phase: 'identity_send_ott', url: sendUrl, status: send.res.status, text: send.text });
 		if (!send.res.ok || send.json?.error) {
-			return { status: 'send_ott_failed', detail: redact(JSON.stringify(send.json || {}).slice(0, 300)) };
+			return { status: 'send_ott_failed', detail: summarizeCredentialError(send.json) };
 		}
 		if (send.json?.apiCanary) {
 			pageConfig.apiCanary = send.json.apiCanary;
@@ -478,7 +818,7 @@ export class OutlookProtocolOAuthClient {
 		}, pageConfig);
 		await this.traceStep(state, { phase: 'identity_verify_code', url: verifyUrl, status: verify.res.status, text: verify.text });
 		if (!verify.res.ok || verify.json?.error) {
-			return { status: 'verify_code_failed', detail: redact(JSON.stringify(verify.json || {}).slice(0, 300)) };
+			return { status: 'verify_code_failed', detail: summarizeCredentialError(verify.json) };
 		}
 
 		const returnUrl = pageConfig.WLXAccount?.confirmIdentity?.options?.viewDefs?.return?.url;
@@ -563,7 +903,7 @@ export class OutlookProtocolOAuthClient {
 				return this.handleAddProof(state, step);
 			}
 			if (pageClass.status === 'credential_action_recovery_email') {
-				return { ...pageClass, url: redact(step.url), detail: redact(titleOf(step.text) || stripText(step.text).slice(0, 300)) };
+				return this.handleCredentialActionRecovery(state, step);
 			}
 			if (pageClass.status === 'identity_confirm') {
 				return this.handleIdentityConfirm(state, step);
