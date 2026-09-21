@@ -155,6 +155,9 @@ function classifyPage({ text = '', url = '', redirectUri }) {
 	if (/Let's protect your account|Add an email address|EmailAddress|proofs\/Add/i.test(text) || /proofs\/Add/i.test(url)) {
 		return { status: 'proof_add_email' };
 	}
+	if (/Help protect your account|Add email so you can safely sign in|interrupt\/credentialaction/i.test(text) || /interrupt\/credentialaction/i.test(url)) {
+		return { status: 'credential_action_recovery_email' };
+	}
 	if (/Help us protect your account|rawProofList|Proofs\/SendOtt|identity\/confirm/i.test(text) || /identity\/confirm/i.test(url)) {
 		return { status: 'identity_confirm' };
 	}
@@ -250,11 +253,12 @@ export class OutlookProtocolOAuthClient {
 		return { res: response, text: await response.text(), url: response.url || url };
 	}
 
-	async postForm(state, url, data, headers = {}) {
+	async postForm(state, url, data, headers = {}, referer = '') {
 		return this.fetchText(state, url, {
 			method: 'POST',
 			headers: {
 				'content-type': 'application/x-www-form-urlencoded',
+				...(referer ? { origin: new URL(url).origin, referer } : {}),
 				...headers,
 			},
 			body: new URLSearchParams(data).toString(),
@@ -345,7 +349,7 @@ export class OutlookProtocolOAuthClient {
 		await this.traceStep(state, { phase: 'add_enter', url: step.url, title: titleOf(step.text), text: step.text });
 		let form = firstForm(step.text);
 		if (form?.action && /proofs\/Add/i.test(form.action) && !('EmailAddress' in form.inputs)) {
-			step = await this.postForm(state, absoluteUrl(form.action, step.url), form.inputs);
+			step = await this.postForm(state, absoluteUrl(form.action, step.url), form.inputs, {}, step.url);
 			step = await this.followRedirects(state, step);
 			await this.traceStep(state, { phase: 'add_rendered', url: step.url, title: titleOf(step.text), text: step.text });
 			form = firstForm(step.text);
@@ -362,9 +366,17 @@ export class OutlookProtocolOAuthClient {
 			EmailAddress: state.recoveryEmail,
 			PhoneNumber: '',
 			PhoneCountryISO: '',
-		});
+		}, {}, step.url);
 		step = await this.followRedirects(state, step);
 		await this.traceStep(state, { phase: 'add_submitted', url: step.url, title: titleOf(step.text), text: step.text });
+		const postForm = firstForm(step.text);
+		if (postForm?.inputs && 'EmailAddress' in postForm.inputs) {
+			return {
+				status: 'add_proof_not_accepted',
+				url: redact(step.url),
+				detail: redact(titleOf(step.text) || stripText(step.text).slice(0, 300)),
+			};
+		}
 		return this.handleVerifyForm(state, step, afterMs);
 	}
 
@@ -391,7 +403,7 @@ export class OutlookProtocolOAuthClient {
 			...form.inputs,
 			iOttText: code,
 			action: form.inputs.action || 'VerifyProof',
-		});
+		}, {}, step.url);
 		step = await this.followRedirects(state, step);
 		await this.traceStep(state, { phase: 'verify_submitted', url: step.url, title: titleOf(step.text), text: step.text });
 		const postClass = classifyPage({ text: step.text || '', url: step.url || '', redirectUri: this.config.redirectUri });
@@ -404,7 +416,7 @@ export class OutlookProtocolOAuthClient {
 	async handleIdentityConfirm(state, step) {
 		let form = firstForm(step.text || '');
 		if (form?.action && /identity\/confirm/i.test(form.action) && !extractConfig(step.text || '')) {
-			step = await this.postForm(state, absoluteUrl(form.action, step.url), form.inputs);
+			step = await this.postForm(state, absoluteUrl(form.action, step.url), form.inputs, {}, step.url);
 			step = await this.followRedirects(state, step);
 		}
 		const pageConfig = extractConfig(step.text);
@@ -550,6 +562,9 @@ export class OutlookProtocolOAuthClient {
 			if (pageClass.status === 'proof_add_email') {
 				return this.handleAddProof(state, step);
 			}
+			if (pageClass.status === 'credential_action_recovery_email') {
+				return { ...pageClass, url: redact(step.url), detail: redact(titleOf(step.text) || stripText(step.text).slice(0, 300)) };
+			}
 			if (pageClass.status === 'identity_confirm') {
 				return this.handleIdentityConfirm(state, step);
 			}
@@ -568,7 +583,7 @@ export class OutlookProtocolOAuthClient {
 						scope: serverData.sRawInputScopes || '',
 						cscope: serverData.sRawInputGrantedScopes || '',
 						canary: serverData.sCanary || '',
-					});
+					}, {}, step.url);
 					continue;
 				}
 				if (form?.action) {
@@ -578,7 +593,7 @@ export class OutlookProtocolOAuthClient {
 						ucaccept: 'Yes',
 						consent: 'accept',
 						accept: 'Yes',
-					});
+					}, {}, step.url);
 					continue;
 				}
 			}
@@ -594,7 +609,7 @@ export class OutlookProtocolOAuthClient {
 					data.consent = data.consent || 'accept';
 					data.accept = data.accept || 'Yes';
 				}
-				step = await this.postForm(state, action, data);
+				step = await this.postForm(state, action, data, {}, step.url);
 				continue;
 			}
 

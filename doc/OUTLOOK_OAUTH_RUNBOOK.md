@@ -57,6 +57,7 @@ node scripts/outlook-oauth-tokens.mjs \
   --recovery-email recovery@example.com \
   --out-dir /tmp/xi-mail-outlook-oauth-run \
   --max 20 \
+  --max-failures 5 \
   --concurrency 1 \
   --wait-seconds 120 \
   --trace
@@ -64,6 +65,8 @@ node scripts/outlook-oauth-tokens.mjs \
 
 Use `--concurrency 1` by default. Microsoft sends similar security-code emails
 for different accounts, and serialized processing avoids code collisions.
+The runner stops after five non-success statuses by default; use
+`--max-failures 0` only for a supervised diagnostic run.
 
 ## Generate, import, and sync
 
@@ -93,6 +96,10 @@ The Xi-Mail code provider intentionally filters by:
 
 If Microsoft rejects a submitted code, the runner records
 `verify_code_failed` and moves on instead of repeatedly submitting stale codes.
+If Microsoft returns the AddProof page again after the recovery email is
+submitted, the runner records `add_proof_not_accepted`; this usually means the
+account did not reach the security-code page and should be investigated before
+continuing a large batch.
 
 ## Outputs
 

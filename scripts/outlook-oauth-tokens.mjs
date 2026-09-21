@@ -25,6 +25,7 @@ Options:
   --only-status <csv>     statuses to select from --status-file (default: needs_recovery_email,needs_recovery_code)
   --start-index <n>       original account index lower bound (default: 0)
   --max <n>               max accounts to process (default: 5)
+  --max-failures <n>      stop the run after this many non-success results (default: 5; 0 disables)
   --concurrency <n>       workers; default 1 to avoid code collisions
   --wait-seconds <n>      Microsoft code wait window (default: 90)
   --trace                 write sanitized protocol trace JSONL
@@ -162,6 +163,7 @@ const statusFile = optionValue(args, '--status-file', '');
 const onlyStatuses = new Set(optionValue(args, '--only-status', 'needs_recovery_email,needs_recovery_code').split(',').map(value => value.trim()).filter(Boolean));
 const startIndex = numberOption(args, '--start-index', 0);
 const max = numberOption(args, '--max', 5);
+const maxFailures = Math.max(0, numberOption(args, '--max-failures', 5));
 const concurrency = Math.max(1, numberOption(args, '--concurrency', 1));
 const waitSeconds = numberOption(args, '--wait-seconds', 90);
 const syncTop = numberOption(args, '--sync-top', 10);
@@ -195,6 +197,7 @@ console.log(JSON.stringify({
 	selected: accounts.length,
 	startIndex,
 	max,
+	maxFailures,
 	concurrency,
 	trace: shouldTrace,
 	dryRun,
@@ -217,6 +220,8 @@ const client = new OutlookProtocolOAuthClient({
 
 let cursor = 0;
 let done = 0;
+let failureCount = 0;
+let stopReason = '';
 const counters = {};
 const tokenRecords = [];
 
@@ -240,6 +245,11 @@ async function processAccount(account) {
 			tokenRecords.push(result.tokenRecord);
 			await appendJsonLine(tokenPath, result.tokenRecord);
 			await chmod(tokenPath, 0o600).catch(() => {});
+		} else if (result.status !== 'success') {
+			failureCount += 1;
+			if (maxFailures && failureCount >= maxFailures && !stopReason) {
+				stopReason = `max_failures_reached:${failureCount}`;
+			}
 		}
 		counters[result.status] = (counters[result.status] || 0) + 1;
 		console.log(`[outlook-oauth] ${done + 1}/${accounts.length} #${account.index} ${maskEmail(account.email)} => ${result.status}`);
@@ -252,6 +262,10 @@ async function processAccount(account) {
 		};
 		await appendJsonLine(resultPath, safeResult);
 		counters.error = (counters.error || 0) + 1;
+		failureCount += 1;
+		if (maxFailures && failureCount >= maxFailures && !stopReason) {
+			stopReason = `max_failures_reached:${failureCount}`;
+		}
 		console.log(`[outlook-oauth] ${done + 1}/${accounts.length} #${account.index} ${maskEmail(account.email)} => error`);
 	} finally {
 		done += 1;
@@ -259,7 +273,7 @@ async function processAccount(account) {
 }
 
 async function worker() {
-	while (cursor < accounts.length) {
+	while (cursor < accounts.length && !stopReason) {
 		const index = cursor;
 		cursor += 1;
 		await processAccount(accounts[index]);
@@ -269,7 +283,11 @@ async function worker() {
 await Promise.all(Array.from({ length: Math.min(concurrency, accounts.length) }, () => worker()));
 
 const summary = {
-	total: accounts.length,
+	total: done,
+	selectedTotal: accounts.length,
+	aborted: Boolean(stopReason),
+	stopReason,
+	failureCount,
 	...counters,
 	tokenCount: tokenRecords.length,
 	resultPath,
