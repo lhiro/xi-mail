@@ -86,6 +86,17 @@ node scripts/outlook-oauth-tokens.mjs \
 after Microsoft returns a send/verification error, which prevents immediately
 retrying the same provider-side rate-limit window.
 
+If Xi-Mail's D1 quota is exhausted, code lookup can use the local Gmail IMAP
+credentials from `GMAIL_ACCOUNTS` instead of the Xi-Mail Gmail connection:
+
+```bash
+node scripts/outlook-oauth-tokens.mjs \
+  --code-source local-imap \
+  --recovery-emails macrooai@gmail.com,oaiproee@gmail.com,macrolin0612@gmail.com \
+  --delay-seconds 90 \
+  --failure-delay-seconds 300
+```
+
 ## Generate, import, and sync
 
 ```bash

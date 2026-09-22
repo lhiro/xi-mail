@@ -13,6 +13,7 @@ import {
 } from './lib/env.mjs';
 import { OutlookProtocolOAuthClient } from './lib/outlook-oauth-client.mjs';
 import { createXiMailClientFromEnv, createXiMailCodeProvider } from './lib/ximail-client.mjs';
+import { createLocalGmailCodeProvider } from './lib/local-gmail-code-provider.mjs';
 
 function usage() {
 	return `Usage:
@@ -30,6 +31,7 @@ Options:
   --recovery-emails <csv> rotate recovery mailboxes by account index (default: --recovery-email)
   --delay-seconds <n>     minimum delay between account attempts (default: 90)
   --failure-delay-seconds <n> extra cooldown after a provider/rate-limit failure (default: 300)
+  --code-source <name>    ximail or local-imap (default: ximail)
   --wait-seconds <n>      Microsoft code wait window (default: 90)
   --trace                 write sanitized protocol trace JSONL
   --dry-run               only print selected accounts
@@ -178,6 +180,7 @@ const failureDelaySeconds = Math.max(
 	delaySeconds,
 	numberOption(args, '--failure-delay-seconds', 300),
 );
+const codeSource = optionValue(args, '--code-source', 'ximail').toLowerCase();
 const statusFile = optionValue(args, '--status-file', '');
 const onlyStatuses = new Set(optionValue(args, '--only-status', 'needs_recovery_email,needs_recovery_code').split(',').map(value => value.trim()).filter(Boolean));
 const startIndex = numberOption(args, '--start-index', 0);
@@ -232,11 +235,9 @@ if (dryRun) {
 }
 
 const xiMail = createXiMailClientFromEnv(env);
-const codeProvider = createXiMailCodeProvider({
-	xiMailClient: xiMail,
-	recoveryEmail: recoveryEmails[0],
-	waitSeconds,
-});
+const codeProvider = codeSource === 'local-imap'
+	? createLocalGmailCodeProvider({ env, waitSeconds })
+	: createXiMailCodeProvider({ xiMailClient: xiMail, recoveryEmail: recoveryEmails[0], waitSeconds });
 const client = new OutlookProtocolOAuthClient({
 	clientId: optionValue(args, '--client-id', env.OAUTH_CLIENT_ID || undefined) || undefined,
 	trace: shouldTrace ? row => appendJsonLine(tracePath, row) : null,
