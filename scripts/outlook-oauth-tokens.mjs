@@ -28,8 +28,8 @@ Options:
   --max-failures <n>      stop the run after this many non-success results (default: 5; 0 disables)
   --concurrency <n>       workers; default 1 to avoid code collisions
   --recovery-emails <csv> rotate recovery mailboxes by account index (default: --recovery-email)
-  --delay-seconds <n>     minimum delay between account attempts (default: 0)
-  --failure-delay-seconds <n> extra cooldown after a provider/rate-limit failure (default: delay)
+  --delay-seconds <n>     minimum delay between account attempts (default: 90)
+  --failure-delay-seconds <n> extra cooldown after a provider/rate-limit failure (default: 300)
   --wait-seconds <n>      Microsoft code wait window (default: 90)
   --trace                 write sanitized protocol trace JSONL
   --dry-run               only print selected accounts
@@ -173,10 +173,10 @@ const recoveryEmails = optionValue(args, '--recovery-emails', '')
 if (!recoveryEmails.length) {
 	recoveryEmails.push(recoveryEmail);
 }
-const delaySeconds = Math.max(0, numberOption(args, '--delay-seconds', 0));
+const delaySeconds = Math.max(0, numberOption(args, '--delay-seconds', 90));
 const failureDelaySeconds = Math.max(
 	delaySeconds,
-	numberOption(args, '--failure-delay-seconds', delaySeconds),
+	numberOption(args, '--failure-delay-seconds', 300),
 );
 const statusFile = optionValue(args, '--status-file', '');
 const onlyStatuses = new Set(optionValue(args, '--only-status', 'needs_recovery_email,needs_recovery_code').split(',').map(value => value.trim()).filter(Boolean));
