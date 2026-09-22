@@ -72,17 +72,50 @@ function normalizeRecord(record) {
 		? record.refreshToken
 		: typeof record.refresh_token === 'string' ? record.refresh_token : '';
 	const password = typeof record.password === 'string' ? record.password : '';
+	const clientId = String(record.clientId || record.client_id || '').trim();
+	const clientSecret = String(record.clientSecret || record.client_secret || '');
+	const tenant = String(record.tenant || record.tenantId || record.tenant_id || '').trim();
+	const grantType = String(record.grantType || record.grant_type || record.oauthGrantType || '').trim().toLowerCase();
 
 	if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
 		return null;
+	}
+
+	if (grantType === 'client_credentials' && clientId && clientSecret) {
+		const provider = String(record.provider || 'outlook').trim().toLowerCase();
+		const protocol = String(record.protocol || 'graph').trim().toLowerCase();
+		const tokenTenant = tenant || 'organizations';
+		const metadata = record.metadata && typeof record.metadata === 'object' && !Array.isArray(record.metadata)
+			? record.metadata
+			: {};
+		return {
+			email,
+			secret: clientSecret,
+			clientId,
+			clientSecret: '',
+			provider,
+			protocol,
+			authType: 'oauth2',
+			scopes: record.scopes || ['https://graph.microsoft.com/.default'],
+			tokenEndpoint: record.tokenEndpoint || record.token_endpoint || `https://login.microsoftonline.com/${tokenTenant}/oauth2/v2.0/token`,
+			metadata: {
+				...metadata,
+				grantType: 'client_credentials',
+				tenant: tokenTenant,
+				mailbox: metadata.mailbox || email,
+			},
+			settings: record.settings && typeof record.settings === 'object' && !Array.isArray(record.settings)
+				? record.settings
+				: {},
+		};
 	}
 
 	if (refreshToken) {
 		return {
 			email,
 			secret: refreshToken,
-			clientId: String(record.clientId || record.client_id || '').trim(),
-			clientSecret: String(record.clientSecret || record.client_secret || ''),
+			clientId,
+			clientSecret,
 			provider: String(record.provider || 'outlook').trim().toLowerCase(),
 			protocol: String(record.protocol || 'graph').trim().toLowerCase(),
 			authType: 'oauth2',

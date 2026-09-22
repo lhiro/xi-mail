@@ -41,6 +41,8 @@ Authenticated user routes:
 - `PUT /api/mail/connections/:connectionId/credential`
 - `DELETE /api/mail/connections/:connectionId/credential`
 - `POST /api/mail/connections/:connectionId/sync`
+- `POST /api/mail/connections/:connectionId/oauth/authorize`
+- `GET /api/oauth/mail/callback`
 
 Global-token route for staged/batch imports:
 
@@ -65,6 +67,66 @@ existing `email` table. Sync responses use `fetched` for the current page and
 External messages are normalized in received-time order before insertion.
 The inbox list is ordered by `create_time DESC, email_id DESC`, so the newest
 message remains at the top even when a provider returns newest-first pages.
+
+## Standard OAuth authorization
+
+For reusable provider onboarding, Xi-Mail exposes a protocol OAuth entry point
+instead of requiring operators to paste refresh tokens:
+
+```bash
+POST /api/mail/connections/:connectionId/oauth/authorize
+```
+
+The response contains an `authorizeUrl` for Outlook Graph or Gmail API
+connections. The callback endpoint validates a signed, short-lived state value,
+uses PKCE, exchanges the authorization code server-side, encrypts the refresh
+token, and marks the connection `ready`.
+
+Required Worker environment values:
+
+- `MAIL_OAUTH_STATE_SECRET` (falls back to `jwt_secret` if unset)
+- Outlook Graph: `OUTLOOK_OAUTH_CLIENT_ID`, optional
+  `OUTLOOK_OAUTH_CLIENT_SECRET`, optional `OUTLOOK_OAUTH_TENANT`
+- Gmail API: `GMAIL_OAUTH_CLIENT_ID`, optional
+  `GMAIL_OAUTH_CLIENT_SECRET`
+- Optional global callback override: `MAIL_OAUTH_REDIRECT_URI`
+
+For organization-wide migrations, prefer provider-native delegated
+administration (Microsoft Graph application permissions / Google Workspace
+domain-wide delegation) instead of automating password or recovery-code flows.
+
+Outlook Graph also supports tenant-level application permissions through the
+same connection model. Import one connection per mailbox with shared app
+credentials:
+
+```json
+{
+  "email": "user@example.com",
+  "provider": "outlook",
+  "protocol": "graph",
+  "grantType": "client_credentials",
+  "tenant": "tenant-id-or-domain",
+  "clientId": "application-client-id",
+  "clientSecret": "application-client-secret",
+  "scopes": ["https://graph.microsoft.com/.default"]
+}
+```
+
+The sync adapter requests a client-credentials access token and reads from
+`/users/{mailbox}/mailFolders/...`, so no per-user refresh token or recovery
+code is required after tenant admin consent is granted.
+
+The local importer can convert an existing mailbox list into this shape without
+printing secrets:
+
+```bash
+node scripts/import-company-mailboxes.mjs \
+  --file /path/to/outlook.txt \
+  --outlook-client-credentials \
+  --outlook-tenant tenant-id-or-domain \
+  --outlook-client-id application-client-id \
+  --outlook-client-secret application-client-secret
+```
 
 Cloudflare Queue is used for supported background sync:
 

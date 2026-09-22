@@ -111,7 +111,7 @@ async function completeSyncTask(c, taskId, status, error = '') {
 	}).where(eq(mailSyncTask.taskId, taskId)).run();
 }
 
-async function accessTokenFor(c, connection, credential, adapter) {
+async function accessTokenFor(c, connection, credential, adapter, metadata = {}) {
 	const expiresAt = Date.parse(credential.accessTokenExpiresAt || '');
 	if (credential.accessToken && Number.isFinite(expiresAt) && expiresAt > Date.now() + 60000) {
 		return credential.accessToken;
@@ -123,6 +123,8 @@ async function accessTokenFor(c, connection, credential, adapter) {
 		refreshToken: credential.secret,
 		tokenEndpoint: credential.tokenEndpoint,
 		scopes: parseJson(credential.scopes, []),
+		metadata,
+		username: connection.accountEmail,
 	});
 
 	await mailConnectionService.saveAccessToken(
@@ -257,14 +259,15 @@ const mailSyncService = {
 				connection.connectionId,
 				connection.authType,
 			);
+			const metadata = parseJson(credential.metadata, {});
 			const accessToken = adapter.requiresAccessToken === false
 				? ''
-				: await accessTokenFor(c, connection, credential, adapter);
+				: await accessTokenFor(c, connection, credential, adapter, metadata);
 			const page = await adapter.listMessages({
 				accessToken,
 				username: connection.accountEmail,
 				password: credential.secret,
-				metadata: parseJson(credential.metadata, {}),
+				metadata,
 				folder,
 				top: options.top || settings.pageSize || 30,
 				pageToken,

@@ -30,21 +30,27 @@ function normalizeFolder(folder) {
 	return folderMap[String(folder || 'inbox').toLowerCase()] || 'inbox';
 }
 
-async function refreshAccessToken({ clientId, clientSecret, refreshToken, tokenEndpoint, scopes }) {
+async function refreshAccessToken({ clientId, clientSecret, refreshToken, tokenEndpoint, scopes, metadata = {} }) {
 	const endpoint = tokenEndpoint || DEFAULT_TOKEN_ENDPOINT;
+	const normalizedScopes = Array.isArray(scopes) ? scopes.filter(Boolean) : [];
+	const scope = normalizedScopes.length > 0 ? normalizedScopes.join(' ') : DEFAULT_GRAPH_SCOPE;
+	const grantType = String(metadata?.grantType || metadata?.oauthGrantType || '').toLowerCase();
+	const useClientCredentials = grantType === 'client_credentials';
 	const body = new URLSearchParams({
 		client_id: clientId,
-		grant_type: 'refresh_token',
-		refresh_token: refreshToken,
+		grant_type: useClientCredentials ? 'client_credentials' : 'refresh_token',
+		scope,
 	});
-	const normalizedScopes = Array.isArray(scopes) ? scopes.filter(Boolean) : [];
-	if (normalizedScopes.length > 0) {
-		body.set('scope', normalizedScopes.join(' '));
+	if (useClientCredentials) {
+		const appSecret = clientSecret || refreshToken;
+		if (appSecret) {
+			body.set('client_secret', appSecret);
+		}
 	} else {
-		body.set('scope', DEFAULT_GRAPH_SCOPE);
-	}
-	if (clientSecret) {
-		body.set('client_secret', clientSecret);
+		body.set('refresh_token', refreshToken);
+		if (clientSecret) {
+			body.set('client_secret', clientSecret);
+		}
 	}
 
 	const response = await fetch(endpoint, {
@@ -97,10 +103,15 @@ async function graphRequest(url, accessToken) {
 	return response.json();
 }
 
-async function listMessages({ accessToken, folder = 'inbox', top = 30, nextLink = '' }) {
+async function listMessages({ accessToken, username = '', metadata = {}, folder = 'inbox', top = 30, nextLink = '' }) {
 	const url = nextLink || (() => {
+		const grantType = String(metadata?.grantType || metadata?.oauthGrantType || '').toLowerCase();
+		const mailbox = String(metadata?.mailbox || username || '').trim();
+		const mailboxPath = grantType === 'client_credentials' && mailbox
+			? `/users/${encodeURIComponent(mailbox)}`
+			: '/me';
 		const endpoint = new URL(
-			`${GRAPH_BASE_URL}/me/mailFolders/${encodeURIComponent(normalizeFolder(folder))}/messages`,
+			`${GRAPH_BASE_URL}${mailboxPath}/mailFolders/${encodeURIComponent(normalizeFolder(folder))}/messages`,
 		);
 		endpoint.searchParams.set('$top', String(Math.min(Math.max(Number(top) || 30, 1), 50)));
 		endpoint.searchParams.set('$count', 'true');

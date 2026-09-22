@@ -60,11 +60,39 @@ const ownerEmail = optionValue(args, '--owner', process.env.XI_MAIL_OWNER || '')
 const label = optionValue(args, '--label', process.env.XI_MAIL_IMPORT_LABEL || 'company-mail');
 const chunkSize = Math.min(Math.max(Number(optionValue(args, '--chunk-size', '50')) || 50, 1), 100);
 const validateOnly = args.includes('--validate-only');
+const outlookClientId = optionValue(args, '--outlook-client-id', process.env.OUTLOOK_OAUTH_CLIENT_ID || process.env.MICROSOFT_CLIENT_ID || '');
+const outlookClientSecret = optionValue(args, '--outlook-client-secret', process.env.OUTLOOK_OAUTH_CLIENT_SECRET || process.env.MICROSOFT_CLIENT_SECRET || '');
+const outlookTenant = optionValue(args, '--outlook-tenant', process.env.OUTLOOK_OAUTH_TENANT || process.env.MICROSOFT_OAUTH_TENANT || '');
+const useOutlookClientCredentials = args.includes('--outlook-client-credentials')
+	|| Boolean(outlookClientId && outlookClientSecret);
+
+if (useOutlookClientCredentials && (!outlookClientId || !outlookClientSecret)) {
+	throw new Error('启用 --outlook-client-credentials 时必须提供 --outlook-client-id 和 --outlook-client-secret');
+}
+
+function toOutlookClientCredentialRecord(record) {
+	return {
+		email: record.email,
+		provider: 'outlook',
+		protocol: 'graph',
+		authType: 'oauth2',
+		grantType: 'client_credentials',
+		tenant: outlookTenant,
+		clientId: outlookClientId,
+		clientSecret: outlookClientSecret,
+		scopes: ['https://graph.microsoft.com/.default'],
+		settings: {
+			source: 'company-mail-client-credentials',
+		},
+	};
+}
 
 const content = await readFile(filePath, 'utf8');
 const lines = content.split('\n');
 const parsed = lines.map(parseLine);
-const validRecords = parsed.filter(Boolean);
+const validRecords = parsed.filter(Boolean).map(record => (
+	useOutlookClientCredentials ? toOutlookClientCredentialRecord(record) : record
+));
 const uniqueEmails = new Set(validRecords.map(record => record.email));
 const oauthRecords = validRecords.filter(record => record.authType === 'oauth2');
 
@@ -74,6 +102,7 @@ console.log(JSON.stringify({
 	valid: validRecords.length,
 	unique: uniqueEmails.size,
 	oauth: oauthRecords.length,
+	outlookClientCredentials: useOutlookClientCredentials,
 	password: validRecords.length - oauthRecords.length,
 	invalid: lines.filter(line => line.trim()).length - validRecords.length,
 }, null, 2));

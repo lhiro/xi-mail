@@ -5,6 +5,7 @@ import mailConnectionService from '../service/mail-connection-service';
 import mailSyncService from '../service/mail-sync-service';
 import verifyAdminToken from '../security/admin-token';
 import mailImportService from '../service/mail-import-service';
+import mailOAuthService from '../service/mail-oauth-service';
 
 app.get('/mail/providers', async (c) => {
 	return c.json(result.ok(mailConnectionService.listProviders()));
@@ -61,6 +62,22 @@ app.post('/mail/connections/:connectionId/sync', async (c) => {
 		body,
 	);
 	return c.json(result.ok(syncResult));
+});
+
+app.post('/mail/connections/:connectionId/oauth/authorize', async (c) => {
+	const body = await c.req.json().catch(() => ({}));
+	const authorize = await mailOAuthService.createAuthorizeUrl(
+		c,
+		c.req.param('connectionId'),
+		body,
+		userContext.getUserId(c),
+	);
+	return c.json(result.ok(authorize));
+});
+
+app.get('/oauth/mail/callback', async (c) => {
+	const callbackResult = await mailOAuthService.handleCallback(c);
+	return c.html(mailOAuthService.oauthSuccessHtml(callbackResult.returnUrl));
 });
 
 app.post('/admin/mail/connections/import', async (c) => {
