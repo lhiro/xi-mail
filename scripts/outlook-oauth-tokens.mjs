@@ -28,6 +28,8 @@ Options:
   --max-failures <n>      stop the run after this many non-success results (default: 5; 0 disables)
   --concurrency <n>       workers; default 1 to avoid code collisions
   --recovery-emails <csv> rotate recovery mailboxes by account index (default: --recovery-email)
+  --delay-seconds <n>     minimum delay between account attempts (default: 0)
+  --failure-delay-seconds <n> extra cooldown after a provider/rate-limit failure (default: delay)
   --wait-seconds <n>      Microsoft code wait window (default: 90)
   --trace                 write sanitized protocol trace JSONL
   --dry-run               only print selected accounts
@@ -91,6 +93,10 @@ function tokenImportRecord(tokenRecord) {
 			createdAt: tokenRecord.createdAt,
 		},
 	};
+}
+
+function sleep(ms) {
+	return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 async function syncTokenRecords(xiMail, tokenRecords, { top = 10, concurrency = 2 } = {}) {
@@ -167,6 +173,11 @@ const recoveryEmails = optionValue(args, '--recovery-emails', '')
 if (!recoveryEmails.length) {
 	recoveryEmails.push(recoveryEmail);
 }
+const delaySeconds = Math.max(0, numberOption(args, '--delay-seconds', 0));
+const failureDelaySeconds = Math.max(
+	delaySeconds,
+	numberOption(args, '--failure-delay-seconds', delaySeconds),
+);
 const statusFile = optionValue(args, '--status-file', '');
 const onlyStatuses = new Set(optionValue(args, '--only-status', 'needs_recovery_email,needs_recovery_code').split(',').map(value => value.trim()).filter(Boolean));
 const startIndex = numberOption(args, '--start-index', 0);
@@ -202,6 +213,8 @@ console.log(JSON.stringify({
 	accountFile,
 	outDir,
 	recoveryEmails: recoveryEmails.map(maskEmail),
+	delaySeconds,
+	failureDelaySeconds,
 	selected: accounts.length,
 	startIndex,
 	max,
@@ -236,9 +249,16 @@ let failureCount = 0;
 let stopReason = '';
 const counters = {};
 const tokenRecords = [];
+let lastAttemptStartedAt = 0;
 
 async function processAccount(account) {
 	try {
+		const minGapMs = delaySeconds * 1000;
+		const waitMs = Math.max(0, minGapMs - (Date.now() - lastAttemptStartedAt));
+		if (waitMs > 0) {
+			await sleep(waitMs);
+		}
+		lastAttemptStartedAt = Date.now();
 		const accountRecoveryEmail = recoveryEmails[Math.abs(account.index) % recoveryEmails.length];
 		const result = await client.authorize(account, {
 			recoveryEmail: accountRecoveryEmail,
@@ -266,6 +286,10 @@ async function processAccount(account) {
 		}
 		counters[result.status] = (counters[result.status] || 0) + 1;
 		console.log(`[outlook-oauth] ${done + 1}/${accounts.length} #${account.index} ${maskEmail(account.email)} => ${result.status}`);
+		if (/^(credential_email_send_failed|send_ott_failed|verify_code_failed)$/.test(result.status)
+			&& failureDelaySeconds > 0) {
+			await sleep(failureDelaySeconds * 1000);
+		}
 	} catch (error) {
 		const safeResult = {
 			index: account.index,

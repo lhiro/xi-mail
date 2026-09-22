@@ -77,8 +77,14 @@ node scripts/outlook-oauth-tokens.mjs \
   --file /path/to/outlook.txt \
   --status-file /tmp/previous-classifier.jsonl \
   --recovery-emails recovery-a@gmail.com,recovery-b@gmail.com \
+  --delay-seconds 90 \
+  --failure-delay-seconds 300 \
   --max-failures 0
 ```
+
+`--delay-seconds` spaces every account attempt. The failure cooldown applies
+after Microsoft returns a send/verification error, which prevents immediately
+retrying the same provider-side rate-limit window.
 
 ## Generate, import, and sync
 
