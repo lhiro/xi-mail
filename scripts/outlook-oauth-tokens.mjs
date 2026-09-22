@@ -27,6 +27,7 @@ Options:
   --max <n>               max accounts to process (default: 5)
   --max-failures <n>      stop the run after this many non-success results (default: 5; 0 disables)
   --concurrency <n>       workers; default 1 to avoid code collisions
+  --recovery-emails <csv> rotate recovery mailboxes by account index (default: --recovery-email)
   --wait-seconds <n>      Microsoft code wait window (default: 90)
   --trace                 write sanitized protocol trace JSONL
   --dry-run               only print selected accounts
@@ -159,6 +160,13 @@ const env = {
 const accountFile = optionValue(args, '--file', env.OUTLOOK_FILE || '/Users/lhiro/Downloads/outlook.txt');
 const outDir = optionValue(args, '--out-dir', '/tmp/xi-mail-outlook-oauth-run');
 const recoveryEmail = optionValue(args, '--recovery-email', env.OUTLOOK_RECOVERY_EMAIL || 'lhiroooa@gmail.com');
+const recoveryEmails = optionValue(args, '--recovery-emails', '')
+	.split(',')
+	.map(value => value.trim())
+	.filter(Boolean);
+if (!recoveryEmails.length) {
+	recoveryEmails.push(recoveryEmail);
+}
 const statusFile = optionValue(args, '--status-file', '');
 const onlyStatuses = new Set(optionValue(args, '--only-status', 'needs_recovery_email,needs_recovery_code').split(',').map(value => value.trim()).filter(Boolean));
 const startIndex = numberOption(args, '--start-index', 0);
@@ -193,7 +201,7 @@ if (resume) {
 console.log(JSON.stringify({
 	accountFile,
 	outDir,
-	recoveryEmail: maskEmail(recoveryEmail),
+	recoveryEmails: recoveryEmails.map(maskEmail),
 	selected: accounts.length,
 	startIndex,
 	max,
@@ -211,7 +219,11 @@ if (dryRun) {
 }
 
 const xiMail = createXiMailClientFromEnv(env);
-const codeProvider = createXiMailCodeProvider({ xiMailClient: xiMail, recoveryEmail, waitSeconds });
+const codeProvider = createXiMailCodeProvider({
+	xiMailClient: xiMail,
+	recoveryEmail: recoveryEmails[0],
+	waitSeconds,
+});
 const client = new OutlookProtocolOAuthClient({
 	clientId: optionValue(args, '--client-id', env.OAUTH_CLIENT_ID || undefined) || undefined,
 	trace: shouldTrace ? row => appendJsonLine(tracePath, row) : null,
@@ -227,8 +239,9 @@ const tokenRecords = [];
 
 async function processAccount(account) {
 	try {
+		const accountRecoveryEmail = recoveryEmails[Math.abs(account.index) % recoveryEmails.length];
 		const result = await client.authorize(account, {
-			recoveryEmail,
+			recoveryEmail: accountRecoveryEmail,
 			codeProvider,
 			traceContext: { index: account.index, email: maskEmail(account.email) },
 		});

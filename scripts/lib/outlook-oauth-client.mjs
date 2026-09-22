@@ -262,6 +262,16 @@ function classifyPage({ text = '', url = '', redirectUri }) {
 		const params = new URL(url).searchParams;
 		return { status: 'oauth_error', detail: params.get('error_description') || params.get('error') || '' };
 	}
+	// After identity confirmation Microsoft may return a JavaScript hand-off
+	// page at oauth20_authorize.srf?res=success. Its hidden form still points
+	// at identity/confirm and its source contains the identity marker, but it
+	// must be submitted as a continuation rather than starting verification
+	// again. Re-classifying it here prevents a second OTP request (and the
+	// resulting 1211/rate-limit failure).
+	if (/oauth20_authorize\.srf/i.test(url) && /[?&]res=success(?:&|$)/i.test(url)
+		&& /javascript required to sign in|\bcontinue\b/i.test(pageText)) {
+		return { status: 'continue' };
+	}
 	if (/Enter the code we sent|Enter your security code|iOttText|Verification code|安全代码/i.test(text) || /proofs\/Verify/i.test(url)) {
 		return { status: 'proof_verify_code' };
 	}

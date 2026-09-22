@@ -181,8 +181,8 @@ export function createXiMailClientFromEnv(env, options = {}) {
 }
 
 export function createXiMailCodeProvider({ xiMailClient, recoveryEmail, waitSeconds = 90 }) {
-	return ({ accountEmail, afterMs }) => xiMailClient.findMicrosoftSecurityCode({
-		recoveryEmail,
+	return ({ accountEmail, afterMs, recoveryEmail: requestedRecoveryEmail }) => xiMailClient.findMicrosoftSecurityCode({
+		recoveryEmail: requestedRecoveryEmail || recoveryEmail,
 		accountEmail,
 		afterMs,
 		waitSeconds,

@@ -68,6 +68,18 @@ for different accounts, and serialized processing avoids code collisions.
 The runner stops after five non-success statuses by default; use
 `--max-failures 0` only for a supervised diagnostic run.
 
+When one recovery mailbox is rate-limited, rotate already-imported recovery
+mailboxes by account index. The code lookup uses the mailbox selected for the
+current account, while still matching the Microsoft message to that account:
+
+```bash
+node scripts/outlook-oauth-tokens.mjs \
+  --file /path/to/outlook.txt \
+  --status-file /tmp/previous-classifier.jsonl \
+  --recovery-emails recovery-a@gmail.com,recovery-b@gmail.com \
+  --max-failures 0
+```
+
 ## Generate, import, and sync
 
 ```bash
