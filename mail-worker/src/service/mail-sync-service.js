@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import BizError from '../error/biz-error';
 import { emailConst, isDel } from '../const/entity-const';
 import account from '../entity/account';
@@ -111,6 +111,21 @@ async function completeSyncTask(c, taskId, status, error = '') {
 	}).where(eq(mailSyncTask.taskId, taskId)).run();
 }
 
+async function latestRemoteUid(c, connectionId, folder) {
+	const row = await orm(c)
+		.select({
+			maxRemoteId: sql`MAX(CAST(${mailMessageRef.remoteId} AS INTEGER))`,
+		})
+		.from(mailMessageRef)
+		.where(and(
+			eq(mailMessageRef.connectionId, Number(connectionId)),
+			eq(mailMessageRef.folder, folder),
+		))
+		.get();
+	const value = Number(row?.maxRemoteId || 0);
+	return Number.isInteger(value) && value > 0 ? value : 0;
+}
+
 async function accessTokenFor(c, connection, credential, adapter, metadata = {}) {
 	const expiresAt = Date.parse(credential.accessTokenExpiresAt || '');
 	if (credential.accessToken && Number.isFinite(expiresAt) && expiresAt > Date.now() + 60000) {
@@ -207,7 +222,7 @@ async function upsertMessage(c, connection, remoteMessage, folder) {
 	return { created: true, updated: false, receivedAt };
 }
 
-async function enqueueNextPage(c, connectionId, folder, top, page) {
+async function enqueueNextPage(c, connectionId, folder, top, page, sinceUid = 0) {
 	const queue = c.env.MAIL_SYNC_QUEUE;
 	const nextLink = page?.['@odata.nextLink'] || '';
 	const nextCursor = page?.nextPageToken || '';
@@ -221,6 +236,9 @@ async function enqueueNextPage(c, connectionId, folder, top, page) {
 		top,
 		syncAll: true,
 	};
+	if (sinceUid > 0) {
+		body.sinceUid = sinceUid;
+	}
 	if (nextLink) {
 		body.nextLink = nextLink;
 	} else {
@@ -260,6 +278,9 @@ const mailSyncService = {
 				connection.authType,
 			);
 			const metadata = parseJson(credential.metadata, {});
+			const sinceUid = adapter.supportsIncrementalPages
+				? Number(options.sinceUid || await latestRemoteUid(c, connection.connectionId, folder))
+				: 0;
 			const accessToken = adapter.requiresAccessToken === false
 				? ''
 				: await accessTokenFor(c, connection, credential, adapter, metadata);
@@ -272,6 +293,7 @@ const mailSyncService = {
 				top: options.top || settings.pageSize || 30,
 				pageToken,
 				nextLink: String(options.nextLink || ''),
+				sinceUid,
 			});
 			const messages = Array.isArray(page?.value) ? page.value : [];
 			let created = 0;
@@ -317,8 +339,8 @@ const mailSyncService = {
 			}
 
 			const top = options.top || settings.pageSize || 30;
-			const queuedNext = Boolean(options.syncAll)
-				&& await enqueueNextPage(c, connection.connectionId, folder, top, page);
+			const queuedNext = Boolean(options.syncAll && (sinceUid > 0 || page?.sinceUid > 0))
+				&& await enqueueNextPage(c, connection.connectionId, folder, top, page, sinceUid);
 			await mailConnectionService.updateSyncState(c, connection.connectionId, 'success');
 			await completeSyncTask(c, task.taskId, 'completed');
 
@@ -335,6 +357,7 @@ const mailSyncService = {
 					: null,
 				nextLink: page?.['@odata.nextLink'] || '',
 				nextCursor: page?.nextPageToken || '',
+				sinceUid,
 				complete: !(page?.['@odata.nextLink'] || page?.nextPageToken),
 				queuedNext,
 			};
@@ -368,11 +391,13 @@ const mailSyncService = {
 			.filter(row => getMailAdapter(row))
 			.map(row => {
 				const settings = parseJson(row.settings, {});
+				const adapter = getMailAdapter(row);
 				return {
 					body: {
 						connectionId: row.connectionId,
 						folder: String(options.folder || settings.folder || 'inbox').toLowerCase(),
 						top: options.top || settings.pageSize || 20,
+						syncAll: adapter?.supportsIncrementalPages === true,
 					},
 					contentType: 'json',
 				};

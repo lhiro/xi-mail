@@ -64,6 +64,12 @@ size, supports a page cursor, and normalizes MIME messages into Xi-Mail's
 existing `email` table. Sync responses use `fetched` for the current page and
 `total` for the provider-reported folder total when available.
 
+For Gmail IMAP, the sync service stores the highest imported numeric UID as an
+incremental cursor and asks the provider only for UIDs after that cursor.
+New-message pages remain bounded and continue through the queue when needed,
+which avoids rescanning the mailbox while still handling bursts where newer
+messages arrive between sync runs.
+
 External messages are normalized in received-time order before insertion.
 The inbox list is ordered by `create_time DESC, email_id DESC`, so the newest
 message remains at the top even when a provider returns newest-first pages.

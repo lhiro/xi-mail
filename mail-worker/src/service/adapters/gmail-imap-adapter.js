@@ -174,8 +174,12 @@ class ImapSession {
 		await this.command(`SELECT ${quote(folder)}`);
 	}
 
-	async searchUids() {
-		const response = await this.command('UID SEARCH ALL');
+	async searchUids(sinceUid = 0) {
+		const cursor = Number(sinceUid);
+		const command = Number.isInteger(cursor) && cursor > 0
+			? `UID SEARCH UID ${cursor + 1}:*`
+			: 'UID SEARCH ALL';
+		const response = await this.command(command);
 		const searchLine = response.lines.find(line => /^\*\s+SEARCH(?:\s|$)/i.test(line)) || '';
 		return searchLine
 			.replace(/^\*\s+SEARCH\s*/i, '')
@@ -248,6 +252,7 @@ class ImapSession {
 
 const gmailImapAdapter = {
 	requiresAccessToken: false,
+	supportsIncrementalPages: true,
 
 	async listMessages({
 		username,
@@ -256,6 +261,7 @@ const gmailImapAdapter = {
 		folder = 'inbox',
 		top = 20,
 		pageToken = '',
+		sinceUid = 0,
 	}) {
 		if (!username || !password) {
 			throw mailProviderError('Gmail IMAP credentials are missing', 401, 'IMAP_CREDENTIAL_MISSING');
@@ -272,7 +278,10 @@ const gmailImapAdapter = {
 			await session.open();
 			await session.login(username, password);
 			await session.select(selectedFolder);
-			const uids = await session.searchUids();
+			const normalizedSinceUid = Number.isInteger(Number(sinceUid)) && Number(sinceUid) > 0
+				? Number(sinceUid)
+				: 0;
+			const uids = await session.searchUids(normalizedSinceUid);
 			const end = Math.max(uids.length - offset, 0);
 			const start = Math.max(end - limit, 0);
 			const pageUids = uids.slice(start, end).reverse();
@@ -288,6 +297,7 @@ const gmailImapAdapter = {
 				value: messages,
 				total: uids.length,
 				nextPageToken: nextOffset < uids.length ? String(nextOffset) : '',
+				sinceUid: normalizedSinceUid,
 			};
 		} finally {
 			await session.close();
