@@ -97,6 +97,13 @@ node scripts/outlook-oauth-tokens.mjs \
   --failure-delay-seconds 300
 ```
 
+Use `--proxy-files /path/proxy.txt` for a backup node. A backup proxy is only
+selected after a transport failure such as timeout or unreachable host; a
+Microsoft OTP rejection stays on cooldown because changing IPs does not turn a
+provider rejection into a valid authorization. Exhausted transient attempts
+are recorded as `deferred` and remain eligible for a later pass, while the run's
+failure counter is reserved for terminal protocol/account failures.
+
 ## Generate, import, and sync
 
 ```bash

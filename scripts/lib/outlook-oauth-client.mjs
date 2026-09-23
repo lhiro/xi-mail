@@ -336,7 +336,10 @@ export class OutlookProtocolOAuthClient {
 		if (!codeProvider) {
 			throw new Error('missing codeProvider');
 		}
-		const client = createCookieFetch({ timeoutMs: this.config.timeoutMs });
+		const client = createCookieFetch({
+			timeoutMs: this.config.timeoutMs,
+			proxyUrl: options.proxyUrl || '',
+		});
 		const state = {
 			account,
 			recoveryEmail,

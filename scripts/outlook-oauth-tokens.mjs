@@ -34,6 +34,7 @@ Options:
   --code-source <name>    ximail or local-imap (default: ximail)
   --retry-attempts <n>    retries per transient account failure (default: 3)
   --retry-backoff-seconds <n> base retry backoff (default: failure cooldown)
+  --proxy-files <csv>     backup proxy files, used only after network failures
   --wait-seconds <n>      Microsoft code wait window (default: 90)
   --trace                 write sanitized protocol trace JSONL
   --dry-run               only print selected accounts
@@ -187,6 +188,20 @@ const retryBackoffSeconds = Math.max(
 	failureDelaySeconds,
 	numberOption(args, '--retry-backoff-seconds', failureDelaySeconds),
 );
+const proxyFiles = optionValue(args, '--proxy-files', '')
+	.split(',')
+	.map(value => value.trim())
+	.filter(Boolean);
+const backupProxies = [];
+for (const proxyFile of proxyFiles) {
+	if (!existsSync(proxyFile)) {
+		continue;
+	}
+	const proxyUrl = (await readFile(proxyFile, 'utf8')).trim();
+	if (/^(?:https?|socks5h?):\/\//i.test(proxyUrl)) {
+		backupProxies.push(proxyUrl);
+	}
+}
 const codeSource = optionValue(args, '--code-source', 'ximail').toLowerCase();
 const statusFile = optionValue(args, '--status-file', '');
 const onlyStatuses = new Set(optionValue(args, '--only-status', 'needs_recovery_email,needs_recovery_code').split(',').map(value => value.trim()).filter(Boolean));
@@ -227,6 +242,7 @@ console.log(JSON.stringify({
 	failureDelaySeconds,
 	retryAttempts,
 	retryBackoffSeconds,
+	backupProxyCount: backupProxies.length,
 	selected: accounts.length,
 	startIndex,
 	max,
@@ -265,6 +281,7 @@ async function processAccount(account) {
 	try {
 		let result;
 		let attempt = 0;
+		let useBackupProxy = false;
 		while (attempt < retryAttempts) {
 			const minGapMs = delaySeconds * 1000;
 			const waitMs = Math.max(0, minGapMs - (Date.now() - lastAttemptStartedAt));
@@ -277,11 +294,18 @@ async function processAccount(account) {
 				result = await client.authorize(account, {
 					recoveryEmail: accountRecoveryEmail,
 					codeProvider,
+					proxyUrl: useBackupProxy && backupProxies.length
+						? backupProxies[attempt % backupProxies.length]
+						: '',
 					traceContext: { index: account.index, email: maskEmail(account.email), attempt: attempt + 1 },
 				});
 			} catch (error) {
 				result = { status: 'error', detail: String(error?.message || error).slice(0, 300) };
 			}
+			const detail = String(result?.detail || '');
+			const networkFailure = result?.status === 'error'
+				&& /fetch failed|proxy fetch failed|timeout|aborted|ECONN|ENET|EHOST|ETIMEDOUT/i.test(detail);
+			useBackupProxy = networkFailure && backupProxies.length > 0;
 			const retryable = !result || /^(credential_email_send_failed|send_ott_failed|verify_code_failed|error)$/.test(result.status);
 			if (!retryable || attempt + 1 >= retryAttempts) {
 				break;
@@ -292,10 +316,12 @@ async function processAccount(account) {
 			attempt += 1;
 		}
 		result ||= { status: 'error', detail: 'empty authorization result' };
+		const transient = /^(credential_email_send_failed|send_ott_failed|verify_code_failed|error)$/.test(result.status);
 		const safeResult = {
 			index: account.index,
 			email: maskEmail(account.email),
-			status: result.status,
+			status: transient ? 'deferred' : result.status,
+			reason: transient ? result.status : undefined,
 			graphMail: result.graphMail ? maskEmail(result.graphMail) : undefined,
 			url: result.url,
 			detail: result.detail,
@@ -305,14 +331,15 @@ async function processAccount(account) {
 			tokenRecords.push(result.tokenRecord);
 			await appendJsonLine(tokenPath, result.tokenRecord);
 			await chmod(tokenPath, 0o600).catch(() => {});
-		} else if (result.status !== 'success') {
+		} else if (!transient && result.status !== 'success') {
 			failureCount += 1;
 			if (maxFailures && failureCount >= maxFailures && !stopReason) {
 				stopReason = `max_failures_reached:${failureCount}`;
 			}
 		}
-		counters[result.status] = (counters[result.status] || 0) + 1;
-		console.log(`[outlook-oauth] ${done + 1}/${accounts.length} #${account.index} ${maskEmail(account.email)} => ${result.status}`);
+		const counterStatus = transient ? 'deferred' : result.status;
+		counters[counterStatus] = (counters[counterStatus] || 0) + 1;
+		console.log(`[outlook-oauth] ${done + 1}/${accounts.length} #${account.index} ${maskEmail(account.email)} => ${counterStatus}${transient ? ` (${result.status})` : ''}`);
 		if (/^(credential_email_send_failed|send_ott_failed|verify_code_failed)$/.test(result.status)
 			&& failureDelaySeconds > 0 && done + 1 < accounts.length) {
 			await sleep(failureDelaySeconds * 1000);

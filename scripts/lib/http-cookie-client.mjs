@@ -111,7 +111,75 @@ export class CookieJar {
 	}
 }
 
-export function createCookieFetch({ timeoutMs = 30000 } = {}) {
+function quoteCurlConfig(value) {
+	return `"${String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+async function proxyFetch(url, options, { proxyUrl, timeoutMs }) {
+	const directory = await mkdtemp(path.join(os.tmpdir(), 'xi-mail-curl-'));
+	const configPath = path.join(directory, 'curl.conf');
+	const headersPath = path.join(directory, 'headers.txt');
+	const bodyPath = path.join(directory, 'body.bin');
+	const requestPath = path.join(directory, 'request.bin');
+	const requestBody = options.body === undefined || options.body === null
+		? null
+		: Buffer.from(String(options.body));
+	if (requestBody) {
+		await writeFile(requestPath, requestBody, { mode: 0o600 });
+	}
+	const config = [
+		'silent',
+		'show-error',
+		`max-time = ${Math.max(1, Math.ceil(timeoutMs / 1000))}`,
+		`proxy = ${quoteCurlConfig(proxyUrl)}`,
+		`request = ${quoteCurlConfig(options.method || 'GET')}`,
+		`dump-header = ${quoteCurlConfig(headersPath)}`,
+		`output = ${quoteCurlConfig(bodyPath)}`,
+		...Array.from(new Headers(options.headers || {}).entries()).map(([name, value]) => (
+			`header = ${quoteCurlConfig(`${name}: ${value}`)}`
+		)),
+		...(requestBody ? [`data-binary = ${quoteCurlConfig(`@${requestPath}`)}`] : []),
+	].join('\n');
+	await writeFile(configPath, config, { mode: 0o600 });
+	try {
+		const output = await new Promise((resolve, reject) => {
+			const child = spawn('curl', [
+				'--config', configPath,
+				'--write-out', '\n%{http_code}\n%{url_effective}',
+				String(url),
+			], { stdio: ['ignore', 'pipe', 'pipe'] });
+			let stdout = '';
+			let stderr = '';
+			child.stdout.on('data', chunk => { stdout += chunk.toString(); });
+			child.stderr.on('data', chunk => { stderr += chunk.toString(); });
+			child.on('error', reject);
+			child.on('close', code => code === 0
+				? resolve(stdout)
+				: reject(new Error(`proxy fetch failed (${code}): ${stderr.slice(0, 180)}`)));
+		});
+		const lines = String(output).trim().split(/\r?\n/);
+		const effectiveUrl = lines.pop() || String(url);
+		const status = Number(lines.pop() || 0);
+		const rawHeaders = await readFile(headersPath, 'utf8').catch(() => '');
+		const headerBlocks = rawHeaders.trim().split(/\r?\n\r?\n/).filter(Boolean);
+		const headerLines = (headerBlocks.at(-1) || '').split(/\r?\n/).slice(1);
+		const headers = new Headers();
+		for (const line of headerLines) {
+			const separator = line.indexOf(':');
+			if (separator > 0) {
+				headers.append(line.slice(0, separator).trim(), line.slice(separator + 1).trim());
+			}
+		}
+		const body = await readFile(bodyPath).catch(() => Buffer.alloc(0));
+		const response = new Response(body, { status, headers });
+		Object.defineProperty(response, 'url', { value: effectiveUrl });
+		return response;
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+}
+
+export function createCookieFetch({ timeoutMs = 30000, proxyUrl = '' } = {}) {
 	const jar = new CookieJar();
 	return {
 		jar,
@@ -124,12 +192,10 @@ export function createCookieFetch({ timeoutMs = 30000 } = {}) {
 				if (cookieHeader && !headers.has('cookie')) {
 					headers.set('cookie', cookieHeader);
 				}
-				const response = await globalThis.fetch(url, {
-					redirect: 'manual',
-					...options,
-					headers,
-					signal: controller.signal,
-				});
+				const requestOptions = { redirect: 'manual', ...options, headers, signal: controller.signal };
+				const response = proxyUrl
+					? await proxyFetch(url, requestOptions, { proxyUrl, timeoutMs })
+					: await globalThis.fetch(url, requestOptions);
 				jar.setFromHeaders(response.headers, url);
 				return response;
 			} finally {
@@ -138,3 +204,7 @@ export function createCookieFetch({ timeoutMs = 30000 } = {}) {
 		},
 	};
 }
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import os from 'node:os';
+import path from 'node:path';
