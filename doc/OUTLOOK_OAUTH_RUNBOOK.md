@@ -104,6 +104,28 @@ provider rejection into a valid authorization. Exhausted transient attempts
 are recorded as `deferred` and remain eligible for a later pass, while the run's
 failure counter is reserved for terminal protocol/account failures.
 
+## Recommended pacing and regions
+
+The current migration measurements show that bursty parallel attempts mostly
+produce provider-side OTP send failures. Use one global dispatcher rather than
+one dispatcher per region:
+
+- start at most one account every 180 seconds;
+- rotate five recovery mailboxes, giving each mailbox at least 15 minutes
+  between sends;
+- defer Microsoft send/verify rejections for at least six hours;
+- keep the original region sticky for a login flow;
+- fail over JP -> US -> CN only for transport errors, never for an OTP rejection.
+
+Example regional backup pool:
+
+```bash
+--proxy-files /tmp/proxy-us.txt,/tmp/proxy-cn.txt,/tmp/proxy-jp.txt
+```
+
+Regional workers must not run concurrently against the same account backlog.
+Multiple ports are availability lanes, not additional authorization throughput.
+
 ## Generate, import, and sync
 
 ```bash

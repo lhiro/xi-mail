@@ -295,7 +295,7 @@ async function processAccount(account) {
 					recoveryEmail: accountRecoveryEmail,
 					codeProvider,
 					proxyUrl: useBackupProxy && backupProxies.length
-						? backupProxies[attempt % backupProxies.length]
+						? backupProxies[Math.max(0, attempt - 1) % backupProxies.length]
 						: '',
 					traceContext: { index: account.index, email: maskEmail(account.email), attempt: attempt + 1 },
 				});
