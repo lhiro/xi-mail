@@ -1,3 +1,5 @@
+import { excludedGmailCategories, gmailExclusionQuery } from './gmail-category-filter';
+
 const GMAIL_API_BASE = 'https://gmail.googleapis.com/gmail/v1/users/me';
 const GMAIL_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
 
@@ -192,7 +194,7 @@ const gmailApiAdapter = {
 		};
 	},
 
-	async listMessages({ accessToken, folder = 'inbox', top = 20, pageToken = '' }) {
+	async listMessages({ accessToken, metadata = {}, folder = 'inbox', top = 20, pageToken = '' }) {
 		const url = new URL(`${GMAIL_API_BASE}/messages`);
 		const labelByFolder = {
 			inbox: 'INBOX',
@@ -206,6 +208,13 @@ const gmailApiAdapter = {
 		url.searchParams.set('maxResults', String(maxResults));
 		if (labelId) {
 			url.searchParams.set('labelIds', labelId);
+		}
+		const excludedCategories = String(folder).toLowerCase() === 'inbox'
+			? excludedGmailCategories(metadata)
+			: [];
+		const exclusionQuery = gmailExclusionQuery(excludedCategories);
+		if (exclusionQuery) {
+			url.searchParams.set('q', exclusionQuery);
 		}
 		if (pageToken) {
 			url.searchParams.set('pageToken', pageToken);

@@ -1,5 +1,10 @@
 import { connect } from 'cloudflare:sockets';
 import PostalMime from 'postal-mime';
+import {
+	excludedGmailCategories,
+	gmailExclusionQuery,
+	hasExcludedGmailCategoryLabel,
+} from './gmail-category-filter';
 
 const DEFAULT_IMAP_HOST = 'imap.gmail.com';
 const DEFAULT_IMAP_PORT = 993;
@@ -174,12 +179,7 @@ class ImapSession {
 		await this.command(`SELECT ${quote(folder)}`);
 	}
 
-	async searchUids(sinceUid = 0) {
-		const cursor = Number(sinceUid);
-		const command = Number.isInteger(cursor) && cursor > 0
-			? `UID SEARCH UID ${cursor + 1}:*`
-			: 'UID SEARCH ALL';
-		const response = await this.command(command);
+	parseSearchUids(response) {
 		const searchLine = response.lines.find(line => /^\*\s+SEARCH(?:\s|$)/i.test(line)) || '';
 		return searchLine
 			.replace(/^\*\s+SEARCH\s*/i, '')
@@ -188,17 +188,47 @@ class ImapSession {
 			.filter(value => Number.isInteger(value) && value > 0);
 	}
 
-	async fetchMessage(uid) {
-		const response = await this.command(
-			`UID FETCH ${uid} (UID BODY.PEEK[]<0.${MAX_MESSAGE_BYTES}> FLAGS INTERNALDATE)`,
-		);
+	async searchUids(sinceUid = 0, { excludedCategories = [] } = {}) {
+		const cursor = Number(sinceUid);
+		const uidCriterion = Number.isInteger(cursor) && cursor > 0
+			? `UID ${cursor + 1}:*`
+			: 'ALL';
+		const exclusionQuery = gmailExclusionQuery(excludedCategories);
+		if (exclusionQuery) {
+			try {
+				const response = await this.command(`UID SEARCH ${uidCriterion} X-GM-RAW ${quote(exclusionQuery)}`);
+				return this.parseSearchUids(response);
+			} catch (error) {
+				// X-GM-RAW is Gmail-specific. Fall back to regular IMAP search and
+				// filter X-GM-LABELS during fetch where available.
+			}
+		}
+
+		const response = await this.command(`UID SEARCH ${uidCriterion}`);
+		return this.parseSearchUids(response);
+	}
+
+	async fetchMessage(uid, { excludedCategories = [] } = {}) {
+		let response;
+		try {
+			response = await this.command(
+				`UID FETCH ${uid} (UID X-GM-LABELS BODY.PEEK[]<0.${MAX_MESSAGE_BYTES}> FLAGS INTERNALDATE)`,
+			);
+		} catch (error) {
+			response = await this.command(
+				`UID FETCH ${uid} (UID BODY.PEEK[]<0.${MAX_MESSAGE_BYTES}> FLAGS INTERNALDATE)`,
+			);
+		}
 		const rawMessage = response.literals[0];
 		if (!rawMessage) {
 			return null;
 		}
 
-		const parsed = await PostalMime.parse(rawMessage);
 		const fetchText = response.lines.join('\n');
+		if (hasExcludedGmailCategoryLabel(fetchText, excludedCategories)) {
+			return null;
+		}
+		const parsed = await PostalMime.parse(rawMessage);
 		const internalDate = fetchText.match(/INTERNALDATE\s+"([^"]+)"/i)?.[1] || '';
 		const receivedDate = internalDate ? new Date(internalDate) : new Date(parsed.date || '');
 		const receivedDateTime = Number.isNaN(receivedDate.getTime())
@@ -272,6 +302,9 @@ const gmailImapAdapter = {
 		const selectedFolder = String(folder).toLowerCase() === 'inbox' ? 'INBOX' : String(folder);
 		const limit = Math.min(Math.max(Number(top) || 20, 1), MAX_MESSAGES_PER_PAGE);
 		const offset = pageOffset(pageToken);
+		const excludedCategories = String(folder).toLowerCase() === 'inbox'
+			? excludedGmailCategories(metadata)
+			: [];
 		const session = new ImapSession(host, port);
 
 		try {
@@ -281,13 +314,13 @@ const gmailImapAdapter = {
 			const normalizedSinceUid = Number.isInteger(Number(sinceUid)) && Number(sinceUid) > 0
 				? Number(sinceUid)
 				: 0;
-			const uids = await session.searchUids(normalizedSinceUid);
+			const uids = await session.searchUids(normalizedSinceUid, { excludedCategories });
 			const end = Math.max(uids.length - offset, 0);
 			const start = Math.max(end - limit, 0);
 			const pageUids = uids.slice(start, end).reverse();
 			const messages = [];
 			for (const uid of pageUids) {
-				const message = await session.fetchMessage(uid);
+				const message = await session.fetchMessage(uid, { excludedCategories });
 				if (message) {
 					messages.push(message);
 				}
